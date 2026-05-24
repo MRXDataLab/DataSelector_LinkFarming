@@ -1,0 +1,41 @@
+[
+  {
+    "label": "h_006 — Kellogg's Corn Flakes / Indian palate mismatch (product / Demand Gravity)",
+    "hypothesis": {
+      "hypothesis_id": "h_006",
+      "statement": "The core Corn Flakes product is perceived as bland and misaligned with Indian taste preferences, which are shifting back towards traditional, savory breakfast options.",
+      "dimension": "product",
+      "force_assignment": "Demand Gravity",
+      "investigation_priority": "high",
+      "expected_signals": [
+        "taste_complaints",
+        "product_feature_gaps",
+        "preference_for_alternatives"
+      ],
+      "expected_counter_signals": [
+        "positive_product_feedback",
+        "taste_satisfaction",
+        "repeat_purchase_rate"
+      ],
+      "rationale": "A foreign product's fit with local tastes is a fundamental question. The portfolio's decline could be rooted in a basic mismatch with the Indian palate.",
+      "core_problem_statement": "Why is the core Kellogg's Corn Flakes portfolio experiencing a consistent year-over-year decline in India?"
+    }
+  },
+  {
+    "label": "h_test_genz — Gen-Z muesli identity (identity_expression / Reinforcement Stability)",
+    "hypothesis": {
+      "hypothesis_id": "h_test_genz",
+      "statement": "Gen-Z consumers are rejecting Kellogg's cornflakes because muesli signals self-care identity that cornflakes cannot match.",
+      "dimension": "identity_expression",
+      "force_assignment": "Reinforcement Stability",
+      "investigation_priority": "high",
+      "expected_signals": [
+        "switching_narratives",
+        "identity_expression",
+        "cross_category_substitution"
+      ],
+      "expected_counter_signals": ["repeat_purchase_rate"],
+      "rationale": "Identity-driven food choices are central to Gen-Z wellness behaviour; cornflakes carry a childish association incompatible with aspirational self-care."
+    }
+  }
+]

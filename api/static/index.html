@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Outtlyr · Data Selection (Day-10 Demo)</title>
+<style>
+  :root {
+    --bg: #050505;
+    --bg-card: #0d0f12;
+    --bg-card-hover: #15181d;
+    --border: #1f242c;
+    --teal: #14b8a6;
+    --teal-dim: #0f766e;
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --text-faint: #6b7280;
+    --supports: #34d399;
+    --refutes: #f87171;
+    --tangential: #94a3b8;
+    --falsifier: #fbbf24;
+    --short-video: #c084fc;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+  a { color: var(--teal); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 16px;
+  }
+  header h1 {
+    margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  header h1 .accent { color: var(--teal); }
+  header .pipeline {
+    font-family: ui-monospace, "SF Mono", monospace;
+    color: var(--text-faint); font-size: 11px;
+  }
+  header .status-pill {
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  header .status-pill.ok { color: var(--supports); border-color: var(--teal-dim); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    padding: 20px 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .panel h2 {
+    margin: 0 0 14px 0; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim);
+  }
+  .panel h2 .count { color: var(--teal); margin-left: 6px; }
+
+  label { display: block; margin-bottom: 4px; color: var(--text-dim); font-size: 12px; }
+  select, textarea, input, button {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit;
+    width: 100%; outline: none;
+  }
+  textarea {
+    font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+    font-size: 12px; min-height: 280px; resize: vertical;
+    line-height: 1.45;
+  }
+  select:focus, textarea:focus, input:focus { border-color: var(--teal); }
+  button {
+    background: var(--teal); color: #001a17;
+    border: none; font-weight: 600; cursor: pointer;
+    padding: 10px 14px; transition: background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #0d9488; }
+  button:disabled { background: var(--bg-card); color: var(--text-faint); cursor: not-allowed; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+
+  /* Event log */
+  #log {
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: 11.5px;
+    max-height: 320px; overflow-y: auto;
+    background: var(--bg); border-radius: 6px;
+    padding: 12px;
+    border: 1px solid var(--border);
+  }
+  .ev { padding: 3px 0; border-bottom: 1px dashed #181c22; line-height: 1.5; }
+  .ev:last-child { border: none; }
+  .ev .kind {
+    display: inline-block;
+    min-width: 150px;
+    color: var(--teal);
+    font-weight: 600;
+  }
+  .ev .stage { color: var(--text-dim); margin-left: 6px; }
+  .ev .data { color: var(--text-faint); margin-left: 6px; font-size: 11px; }
+  .ev.start .kind { color: var(--teal); }
+  .ev.done .kind { color: var(--supports); }
+  .ev.error .kind { color: var(--refutes); }
+
+  /* Job summary */
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+  .stat {
+    background: var(--bg); border-radius: 6px; padding: 10px 12px;
+    border: 1px solid var(--border);
+  }
+  .stat .label { color: var(--text-faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  .stat .value.supports { color: var(--supports); }
+  .stat .value.refutes { color: var(--refutes); }
+  .stat .value.tangential { color: var(--tangential); }
+
+  /* Results grid */
+  #results-area { grid-column: 1 / -1; }
+  .verdict-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  }
+  @media (max-width: 1200px) { .verdict-grid { grid-template-columns: 1fr; } }
+
+  .verdict-col h3 {
+    margin: 0 0 12px 0; font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .verdict-col.supports h3 { color: var(--supports); }
+  .verdict-col.refutes h3 { color: var(--refutes); }
+  .verdict-col.tangential h3 { color: var(--tangential); }
+  .verdict-col h3 .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--bg); color: var(--text-dim);
+    font-family: ui-monospace, monospace;
+    border: 1px solid var(--border);
+  }
+
+  .card {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+    margin-bottom: 14px; transition: border-color 0.15s, transform 0.15s;
+  }
+  .card:hover { border-color: var(--teal-dim); }
+  .card.short-video .thumb-wrap {
+    position: relative; aspect-ratio: 9/16; max-height: 280px;
+    background: #000; overflow: hidden;
+  }
+  .card .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; }
+  .card .play-overlay {
+    position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.0); transition: background 0.15s;
+    pointer-events: none;
+  }
+  .card:hover .play-overlay { background: rgba(0,0,0,0.25); }
+  .card .play-overlay::after {
+    content: "▶"; color: white; font-size: 36px; opacity: 0; transition: opacity 0.15s;
+  }
+  .card:hover .play-overlay::after { opacity: 0.9; }
+  .card .duration-badge {
+    position: absolute; bottom: 6px; right: 6px;
+    background: rgba(0,0,0,0.8); color: white;
+    padding: 2px 6px; border-radius: 3px; font-size: 11px;
+    font-family: ui-monospace, monospace;
+  }
+  .card .body { padding: 12px; }
+  .card .title {
+    font-size: 13px; font-weight: 500; line-height: 1.4;
+    margin: 0 0 6px 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card .creator {
+    color: var(--text-faint); font-size: 11px;
+    margin-bottom: 8px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card .meta {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    color: var(--text-dim); font-size: 11px;
+    font-family: ui-monospace, monospace;
+    margin-bottom: 8px;
+  }
+  .card .meta .icon { color: var(--text-faint); margin-right: 3px; }
+  .card .engagement-bar {
+    height: 3px; background: var(--border); border-radius: 2px;
+    margin-bottom: 8px; overflow: hidden;
+  }
+  .card .engagement-bar .fill {
+    height: 100%; background: var(--teal); transition: width 0.3s;
+  }
+  .card .verdict-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; gap: 8px;
+  }
+  .verdict-badge {
+    padding: 3px 8px; border-radius: 4px; font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .verdict-badge.supports { background: rgba(52,211,153,0.15); color: var(--supports); }
+  .verdict-badge.refutes { background: rgba(248,113,113,0.15); color: var(--refutes); }
+  .verdict-badge.tangential { background: rgba(148,163,184,0.15); color: var(--tangential); }
+  .confidence {
+    font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-dim);
+  }
+  .tags {
+    display: flex; gap: 4px; flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .tag {
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-dim); padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-family: ui-monospace, monospace;
+  }
+  .tag.falsifier { color: var(--falsifier); border-color: var(--falsifier); }
+  .tag.short-video { color: var(--short-video); }
+  .top-comment {
+    background: var(--bg-card); border-left: 2px solid var(--teal-dim);
+    padding: 6px 8px; font-size: 11px; line-height: 1.4;
+    color: var(--text-dim); border-radius: 0 4px 4px 0;
+    margin-top: 6px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .empty-bucket {
+    color: var(--text-faint); font-style: italic;
+    text-align: center; padding: 20px;
+    border: 1px dashed var(--border); border-radius: 6px;
+  }
+
+  /* Download buttons (shown after pipeline_complete) */
+  .download-bar {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border);
+  }
+  .download-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px; font-weight: 500;
+    background: var(--bg-card);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+    text-decoration: none;
+  }
+  .download-btn:hover {
+    border-color: var(--teal-dim);
+    background: var(--bg);
+    color: var(--teal);
+    text-decoration: none;
+  }
+  .download-btn.primary {
+    background: var(--teal);
+    color: #001a17;
+    border-color: var(--teal);
+    font-weight: 600;
+  }
+  .download-btn.primary:hover {
+    background: #0d9488;
+    border-color: #0d9488;
+    color: #001a17;
+  }
+
+  /* ── Batch upload section ──────────────────────────────────────────── */
+  .batch-section {
+    grid-column: 1 / -1;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 4px;
+  }
+  .batch-section summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--text-dim);
+  }
+  .batch-section summary::-webkit-details-marker { display: none; }
+  .batch-section summary .chev {
+    color: var(--teal); transition: transform 0.15s;
+  }
+  .batch-section[open] summary .chev { transform: rotate(90deg); }
+  .batch-section .body { margin-top: 14px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 28px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    transition: border-color 0.15s, background 0.15s;
+    cursor: pointer;
+    background: var(--bg);
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: var(--teal);
+    background: var(--bg-card-hover);
+    color: var(--teal);
+  }
+  .drop-zone input[type="file"] { display: none; }
+  .drop-zone .filename {
+    color: var(--teal); font-family: ui-monospace, monospace;
+    font-size: 12px; margin-top: 6px;
+  }
+  .drop-zone .hint {
+    color: var(--text-faint); font-size: 11px; margin-top: 4px;
+  }
+
+  .batch-controls {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    margin-top: 14px;
+  }
+  @media (max-width: 720px) { .batch-controls { grid-template-columns: 1fr 1fr; } }
+
+  /* Preview block */
+  .preview {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-top: 14px;
+  }
+  .preview .preview-title {
+    color: var(--text); font-size: 13px; font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .preview .cp-block {
+    border-left: 2px solid var(--teal-dim);
+    padding: 4px 10px; margin: 6px 0;
+  }
+  .preview .cp-block .cp-id { color: var(--teal); font-family: ui-monospace, monospace; }
+  .preview .cp-block .cp-stmt {
+    color: var(--text-dim); font-size: 11px; margin-top: 2px;
+  }
+  .preview .pair-list, .preview .err-list {
+    margin-top: 8px; font-size: 11px;
+    font-family: ui-monospace, monospace;
+  }
+  .preview .pair-list .tag { color: var(--falsifier); }
+  .preview .err-list .tag { color: var(--refutes); }
+
+  /* Batch progress table */
+  .batch-progress {
+    margin-top: 16px;
+    border: 1px solid var(--border); border-radius: 6px;
+    overflow: hidden;
+  }
+  .batch-row {
+    display: grid;
+    grid-template-columns: 30px 1fr 80px 110px 70px 70px 110px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+    font-size: 12px;
+  }
+  .batch-row:last-child { border-bottom: none; }
+  .batch-row:hover { background: var(--bg-card-hover); }
+  .batch-row.expanded { background: var(--bg-card-hover); }
+  .batch-row.header {
+    background: var(--bg); cursor: default;
+    color: var(--text-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    font-weight: 600;
+  }
+  .batch-row .status-dot { font-size: 16px; line-height: 1; }
+  .batch-row .hyp-title {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .batch-row .cp { color: var(--teal); font-family: ui-monospace, monospace; }
+  .batch-row .verdict-pills {
+    display: flex; gap: 4px; font-family: ui-monospace, monospace; font-size: 11px;
+  }
+  .batch-row .verdict-pill.s { color: var(--supports); }
+  .batch-row .verdict-pill.r { color: var(--refutes); }
+  .batch-row .verdict-pill.t { color: var(--tangential); }
+  .batch-row .elapsed { color: var(--text-faint); font-family: ui-monospace, monospace; }
+
+  .batch-aggregate {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    margin-top: 14px;
+  }
+
+  .channel-fits {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 10px;
+  }
+  .channel-chip {
+    background: var(--bg); border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 4px;
+    font-family: ui-monospace, monospace; font-size: 11px;
+    color: var(--text-dim);
+  }
+  .channel-chip .score { color: var(--teal); margin-left: 4px; font-weight: 600; }
+  .channel-chip.skipped { opacity: 0.5; color: var(--text-faint); }
+
+  .loader {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--bg-card); border-top-color: var(--teal);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Step 14 — past-runs + cost panel + settings drawer */
+  .past-runs-section { grid-column: 1 / -1; }
+  .past-runs-table {
+    border: 1px solid var(--border); border-radius: 6px;
+    overflow: hidden;
+  }
+  .past-run-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 80px 110px 90px 80px;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+    font-size: 12px;
+  }
+  .past-run-row:hover { background: var(--bg-card-hover); }
+  .past-run-row.header {
+    background: var(--bg); cursor: default;
+    color: var(--text-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    font-weight: 600;
+  }
+  .past-run-row .stmt {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text);
+  }
+  .past-run-row .ts {
+    color: var(--text-faint); font-family: ui-monospace, monospace;
+    font-size: 11px;
+  }
+  .past-run-row .job-id {
+    color: var(--teal); font-family: ui-monospace, monospace;
+  }
+
+  .cost-pill {
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", monospace;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .cost-pill .v { color: var(--teal); font-weight: 600; }
+  .cost-pill.over { color: var(--refutes); border-color: var(--refutes); }
+  .cost-pill.over .v { color: var(--refutes); }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Outtlyr · <span class="accent">Data Selection</span></h1>
+    <div class="pipeline">L0 decompose → L1 score → L2 synth → L3 discover → L5 dedup → L6 triage → L7 emit</div>
+  </div>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <div id="cost-pill" class="cost-pill" hidden>
+      <span>last run:</span>
+      <span class="v" id="cost-pill-usd">$0.0000</span>
+      <span id="cost-pill-detail" style="color: var(--text-faint);"></span>
+    </div>
+    <div id="registry-status" class="status-pill">checking…</div>
+  </div>
+</header>
+
+<main>
+  <!-- ── BATCH UPLOAD SECTION ──────────────────────────────────────────── -->
+  <details id="batch-section" class="batch-section">
+    <summary>
+      <span>📤 Batch upload — run many hypotheses from one CSV</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="body">
+      <label class="drop-zone" id="drop-zone">
+        <div style="font-size: 14px; color: var(--text);">
+          Drag a CSV here, or <span style="color: var(--teal); text-decoration: underline;">click to browse</span>
+        </div>
+        <div class="hint">
+          Required column: <code>statement</code>. Optional: hypothesis_id, core_problem_id,
+          dimension, force_assignment, expected_signals (pipe-delimited), expected_counter_signals,
+          contrarian_pair_id, rationale, window_label, max_triage.
+        </div>
+        <div class="hint">
+          <a href="/sample_batch.csv" download style="color: var(--teal);">📥 download sample_batch.csv</a>
+        </div>
+        <div class="filename" id="csv-filename"></div>
+        <input type="file" id="csv-input" accept=".csv,text/csv" />
+      </label>
+
+      <div class="batch-controls">
+        <div>
+          <label for="batch-window">Time window</label>
+          <select id="batch-window">
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
+            <option value="90d">90 days</option>
+            <option value="1y" selected>1 year</option>
+            <option value="5y">5 years</option>
+          </select>
+        </div>
+        <div>
+          <label for="batch-max-triage">Triage budget</label>
+          <input id="batch-max-triage" type="number" value="5" min="1" max="30" />
+        </div>
+        <div>
+          <label for="batch-concurrency">Concurrency</label>
+          <input id="batch-concurrency" type="number" value="3" min="1" max="10" />
+        </div>
+        <div>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-top: 18px;">
+            <input type="checkbox" id="batch-use-llm" checked style="width: auto;" />
+            <span style="font-size: 12px;">Use LLM</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="batch-preview" class="preview" hidden></div>
+
+      <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+        <button id="batch-start" disabled>Run batch</button>
+        <button id="batch-clear" style="background: var(--bg); color: var(--text-dim); border: 1px solid var(--border);">
+          Clear
+        </button>
+      </div>
+
+      <div id="batch-running" hidden>
+        <h2 style="margin-top: 18px;">Batch progress
+          <span class="count" id="batch-event-count"></span>
+        </h2>
+        <div id="batch-meta" style="color: var(--text-faint); font-size: 11px; margin-bottom: 10px; font-family: ui-monospace, monospace;"></div>
+
+        <div class="batch-aggregate">
+          <div class="stat"><div class="label">Members done</div><div class="value" id="batch-stat-done">0 / 0</div></div>
+          <div class="stat"><div class="label">Supports (Σ)</div><div class="value supports" id="batch-stat-s">0</div></div>
+          <div class="stat"><div class="label">Refutes (Σ)</div><div class="value refutes" id="batch-stat-r">0</div></div>
+          <div class="stat"><div class="label">Tangential (Σ)</div><div class="value tangential" id="batch-stat-t">0</div></div>
+        </div>
+
+        <div class="batch-progress" id="batch-table"></div>
+
+        <div id="batch-download-bar" class="download-bar" hidden>
+          <a id="batch-download-csv" class="download-btn primary" href="#" download
+             title="Aggregated CSV — 30 columns (2 batch + 28 link), every hypothesis pooled, opens in Excel/Sheets">
+            ⬇ Download batch CSV
+          </a>
+          <a id="batch-download-json" class="download-btn" href="#" download
+             title="Full nested batch JSON — core_problem → hypothesis → grouped links">
+            ⬇ Download batch JSON
+          </a>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- ── INPUT PANEL (single hypothesis) ────────────────────────────────── -->
+  <section class="panel">
+    <h2>Hypothesis</h2>
+    <label for="sample">Quick-load sample</label>
+    <select id="sample">
+      <option value="">— pick a sample, or paste your own below —</option>
+    </select>
+    <div style="height: 10px;"></div>
+
+    <label for="hyp">Hypothesis JSON</label>
+    <textarea id="hyp" spellcheck="false" placeholder='{"hypothesis_id": "...", "statement": "...", "dimension": "...", ...}'></textarea>
+
+    <div style="height: 10px;"></div>
+    <div class="row">
+      <div>
+        <label for="window">Time window</label>
+        <select id="window">
+          <option value="7d">7 days</option>
+          <option value="30d">30 days</option>
+          <option value="90d">90 days</option>
+          <option value="1y" selected>1 year</option>
+          <option value="5y">5 years</option>
+        </select>
+      </div>
+      <div>
+        <label for="max_triage">Triage budget (top N)</label>
+        <input id="max_triage" type="number" value="10" min="1" max="30" />
+      </div>
+    </div>
+    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+      <input type="checkbox" id="use_llm" checked style="width: auto;" />
+      <span>Use LLM (Gemini) for slot-fill + triage verdicts</span>
+    </label>
+
+    <div style="height: 14px;"></div>
+    <button id="start">Run pipeline</button>
+  </section>
+
+  <!-- ── EVENT STREAM PANEL ────────────────────────────────────────────── -->
+  <section class="panel">
+    <h2>
+      Pipeline events
+      <span class="count" id="event-count"></span>
+    </h2>
+    <div id="job-meta" style="color: var(--text-faint); font-size: 11px; margin-bottom: 10px; font-family: ui-monospace, monospace;">
+      No job yet.
+    </div>
+    <div id="log"></div>
+
+    <h2 style="margin-top: 18px;">Final summary</h2>
+    <div class="summary">
+      <div class="stat"><div class="label">Supports</div><div class="value supports" id="stat-supports">—</div></div>
+      <div class="stat"><div class="label">Refutes</div><div class="value refutes" id="stat-refutes">—</div></div>
+      <div class="stat"><div class="label">Tangential</div><div class="value tangential" id="stat-tangential">—</div></div>
+      <div class="stat"><div class="label">Elapsed</div><div class="value" id="stat-elapsed">—</div></div>
+    </div>
+    <div id="channel-fits-display" class="channel-fits"></div>
+
+    <div id="download-bar" class="download-bar" hidden>
+      <a id="download-csv" class="download-btn primary" href="#" download
+         title="Flat CSV — 28 columns, one row per triaged link, Excel-friendly UTF-8 BOM">
+        ⬇ Download CSV
+      </a>
+      <a id="download-json" class="download-btn" href="#" download
+         title="Full JSON — every link with decomposition, channel fits, queries, and run metadata">
+        ⬇ Download JSON
+      </a>
+    </div>
+  </section>
+
+  <!-- ── PAST RUNS (Step 14 memory store) ──────────────────────────────── -->
+  <details class="batch-section past-runs-section" id="past-runs-section">
+    <summary>
+      <span>🕘 Past runs — load a saved job from disk</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="body">
+      <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+        <input id="past-runs-filter" type="text" placeholder="Filter by hypothesis_id (e.g. h_006)" style="flex: 1;" />
+        <button id="past-runs-refresh" style="background: var(--bg); color: var(--text); border: 1px solid var(--border);">Refresh</button>
+      </div>
+      <div class="past-runs-table" id="past-runs-table"></div>
+      <div id="past-runs-empty" style="color: var(--text-faint); padding: 16px; text-align: center; font-style: italic;" hidden>
+        No past runs on disk yet. Run a pipeline once and it will land here.
+      </div>
+    </div>
+  </details>
+
+  <!-- ── RESULTS GRID ──────────────────────────────────────────────────── -->
+  <section id="results-area">
+    <div class="verdict-grid">
+      <div class="verdict-col supports">
+        <h3>● Supports <span class="badge" id="supports-badge">0</span></h3>
+        <div id="supports-list"></div>
+      </div>
+      <div class="verdict-col refutes">
+        <h3>● Refutes <span class="badge" id="refutes-badge">0</span></h3>
+        <div id="refutes-list"></div>
+      </div>
+      <div class="verdict-col tangential">
+        <h3>● Tangential <span class="badge" id="tangential-badge">0</span></h3>
+        <div id="tangential-list"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const API = "/api/data-selection";
+let currentJobId = null;
+let currentEventSource = null;
+let eventCount = 0;
+
+// ── Registry status badge ─────────────────────────────────────────────────
+fetch(`${API}/registry`).then(r => r.json()).then(d => {
+  const ch = d.available_channels || [];
+  const pill = $("registry-status");
+  pill.textContent = ch.length
+    ? `${ch.length} discoverer${ch.length>1?"s":""} ready · ${ch.join(", ")}`
+    : "no discoverers available";
+  pill.classList.toggle("ok", ch.length > 0);
+}).catch(() => $("registry-status").textContent = "API unreachable");
+
+// ── Sample hypothesis loader ──────────────────────────────────────────────
+let SAMPLES = [];
+fetch("/sample_hypotheses.json").then(r => r.json()).then(samples => {
+  SAMPLES = samples;
+  const sel = $("sample");
+  samples.forEach((s, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = s.label;
+    sel.appendChild(opt);
+  });
+  // Pre-load first sample
+  if (samples.length) {
+    sel.value = 0;
+    $("hyp").value = JSON.stringify(samples[0].hypothesis, null, 2);
+  }
+});
+$("sample").addEventListener("change", (e) => {
+  const i = e.target.value;
+  if (i === "") return;
+  $("hyp").value = JSON.stringify(SAMPLES[i].hypothesis, null, 2);
+});
+
+// ── Number formatting ────────────────────────────────────────────────────
+function fmtCount(n) {
+  if (n == null) return "—";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+}
+function fmtDur(s) {
+  if (s == null) return "—";
+  if (s < 60) return s + "s";
+  return Math.floor(s/60) + ":" + String(s%60).padStart(2,"0");
+}
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ── Start button ─────────────────────────────────────────────────────────
+$("start").addEventListener("click", async () => {
+  let hyp;
+  try {
+    hyp = JSON.parse($("hyp").value);
+  } catch (e) {
+    alert("Invalid hypothesis JSON: " + e.message);
+    return;
+  }
+  if (!hyp.statement) {
+    alert("Hypothesis must include a 'statement' field.");
+    return;
+  }
+
+  // Reset UI
+  $("log").innerHTML = "";
+  $("supports-list").innerHTML = "";
+  $("refutes-list").innerHTML = "";
+  $("tangential-list").innerHTML = "";
+  ["supports", "refutes", "tangential"].forEach(v => {
+    $(`stat-${v}`).textContent = "—";
+    $(`${v}-badge`).textContent = "0";
+  });
+  $("stat-elapsed").textContent = "—";
+  $("channel-fits-display").innerHTML = "";
+  $("download-bar").hidden = true;
+  $("download-csv").removeAttribute("href");
+  $("download-json").removeAttribute("href");
+  eventCount = 0;
+  $("event-count").textContent = "";
+
+  // Close prior SSE
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+
+  $("start").disabled = true;
+  $("start").innerHTML = '<span class="loader"></span> Starting…';
+
+  let job;
+  try {
+    const r = await fetch(`${API}/start`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        hypothesis: hyp,
+        window_label: $("window").value,
+        use_llm: $("use_llm").checked,
+        max_triage: parseInt($("max_triage").value) || 10,
+      }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    job = await r.json();
+  } catch (e) {
+    alert("Start failed: " + e.message);
+    $("start").disabled = false;
+    $("start").textContent = "Run pipeline";
+    return;
+  }
+
+  currentJobId = job.job_id;
+  $("job-meta").textContent =
+    `job_id=${job.job_id}  hypothesis_id=${job.hypothesis_id}  window=${job.window_label}`;
+  $("start").innerHTML = '<span class="loader"></span> Running…';
+
+  // ── Subscribe SSE
+  const es = new EventSource(`${API}/jobs/${job.job_id}/events`);
+  currentEventSource = es;
+  ["pipeline_start","stage_start","stage_done","channel_discovered",
+   "pipeline_complete","pipeline_error","stream_end"].forEach(kind => {
+    es.addEventListener(kind, async (e) => {
+      let data;
+      try { data = JSON.parse(e.data); } catch { return; }
+      eventCount += 1;
+      $("event-count").textContent = `(${eventCount})`;
+
+      // Render in log
+      const div = document.createElement("div");
+      const klass = kind.includes("error") ? "error"
+                   : kind.includes("done") || kind.includes("complete") ? "done"
+                   : "start";
+      div.className = `ev ${klass}`;
+      let dataSummary = "";
+      if (data.data) {
+        if (data.data.top_channels) {
+          dataSummary = data.data.top_channels.map(c => `${c.channel}:${c.fit_score}`).join(" ");
+        } else if (data.data.queries_per_channel) {
+          const total = data.data.total_queries;
+          dataSummary = `${total} queries across ${Object.keys(data.data.queries_per_channel).length} channels`;
+        } else if (data.data.channel && data.data.n_links !== undefined) {
+          dataSummary = data.data.skipped
+            ? `SKIPPED (${data.data.reason || "no discoverer"})`
+            : `${data.data.n_links} links from ${data.data.n_queries_run} queries`;
+        } else if (data.data.verdict_counts) {
+          const vc = data.data.verdict_counts;
+          dataSummary = `S=${vc.supports} R=${vc.refutes} T=${vc.tangential}`;
+        } else if (data.data.n_triaged !== undefined) {
+          dataSummary = `${data.data.n_candidates} candidates → ${data.data.n_triaged} triaged`;
+        } else if (data.data.input_links !== undefined) {
+          // L5 dedup stage_done payload
+          dataSummary = `${data.data.input_links} → ${data.data.clusters} clusters` +
+            (data.data.collapsed ? ` (collapsed ${data.data.collapsed}` : '') +
+            (data.data.cross_platform_clusters ? `, ${data.data.cross_platform_clusters} cross-platform)` : (data.data.collapsed ? ')' : ''));
+        } else if (data.data.n_candidates !== undefined) {
+          dataSummary = `${data.data.n_candidates} candidates`;
+        } else if (data.data.primary_entity) {
+          dataSummary = `entity=${data.data.primary_entity} pains=${data.data.n_pains} aspirations=${data.data.n_aspirations}`;
+        } else if (data.data.elapsed_sec) {
+          dataSummary = `${data.data.elapsed_sec.toFixed(2)}s`;
+        } else if (data.data.error) {
+          dataSummary = data.data.error;
+        }
+      }
+      div.innerHTML = `<span class="kind">${kind}</span>` +
+        (data.stage ? `<span class="stage">[${data.stage}]</span>` : '') +
+        (dataSummary ? `<span class="data">${escapeHtml(dataSummary)}</span>` : '');
+      $("log").appendChild(div);
+      $("log").scrollTop = $("log").scrollHeight;
+
+      // Render channel chips at L1_source_select
+      if (data.stage === "L1_source_select" && kind === "stage_done") {
+        const cf = $("channel-fits-display");
+        cf.innerHTML = "";
+        (data.data.top_channels || []).forEach(c => {
+          const chip = document.createElement("div");
+          chip.className = "channel-chip";
+          chip.innerHTML = `${c.channel}<span class="score">${c.fit_score}</span>`;
+          cf.appendChild(chip);
+        });
+      }
+      // Mark channels skipped
+      if (kind === "channel_discovered" && data.data.skipped) {
+        const chips = $("channel-fits-display").children;
+        for (const chip of chips) {
+          if (chip.textContent.startsWith(data.data.channel)) {
+            chip.classList.add("skipped");
+          }
+        }
+      }
+
+      // On terminal — fetch results
+      if (kind === "pipeline_complete" || kind === "pipeline_error" || kind === "stream_end") {
+        es.close();
+        currentEventSource = null;
+        if (kind !== "stream_end") {
+          await loadResults(job.job_id);
+        }
+        $("start").disabled = false;
+        $("start").textContent = "Run pipeline";
+      }
+    });
+  });
+  es.onerror = () => {
+    // EventSource auto-retries; we trust stream_end / pipeline_complete to finalize
+  };
+});
+
+// ── Render verdict cards ─────────────────────────────────────────────────
+async function loadResults(jobId) {
+  const r = await fetch(`${API}/jobs/${jobId}/results?wait=true`);
+  if (!r.ok) {
+    $("log").insertAdjacentHTML("beforeend",
+      `<div class="ev error"><span class="kind">results-error</span> ${escapeHtml(await r.text())}</div>`);
+    return;
+  }
+  const data = await r.json();
+
+  // Stats
+  $("stat-supports").textContent = data.verdict_counts.supports;
+  $("stat-refutes").textContent = data.verdict_counts.refutes;
+  $("stat-tangential").textContent = data.verdict_counts.tangential;
+  $("stat-elapsed").textContent = data.elapsed_sec.toFixed(1) + "s";
+
+  // Step 14 — cost pill
+  if (data.cost) {
+    const cost = data.cost;
+    $("cost-pill").hidden = false;
+    $("cost-pill-usd").textContent = "$" + (cost.total_usd ?? 0).toFixed(4);
+    const ytU = cost.yt?.quota_units ?? 0;
+    const llmCalls = cost.llm?.calls ?? 0;
+    $("cost-pill-detail").textContent = `  ·  ${llmCalls} LLM calls · ${ytU} YT units`;
+    $("cost-pill").classList.toggle("over", !!cost.hit_cap);
+  }
+
+  // Download buttons — point them at the server endpoints w/ wait=true so
+  // the user can click immediately even if results are still being
+  // serialized server-side. ?download=1 sets Content-Disposition.
+  $("download-csv").href = `${API}/jobs/${jobId}/results.csv?wait=true`;
+  $("download-json").href = `${API}/jobs/${jobId}/results?wait=true&download=1`;
+  $("download-bar").hidden = false;
+
+  // Per-verdict columns
+  ["supports","refutes","tangential"].forEach(verdict => {
+    const list = $(`${verdict}-list`);
+    const badge = $(`${verdict}-badge`);
+    const items = data.grouped[verdict] || [];
+    badge.textContent = items.length;
+    list.innerHTML = "";
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-bucket";
+      empty.textContent = "no evidence in this bucket";
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(link => list.appendChild(cardForLink(link)));
+  });
+}
+
+function cardForLink(link) {
+  const card = document.createElement("div");
+  card.className = "card" + (link.is_short_video ? " short-video" : "");
+
+  const thumb = link.thumbnail_url
+    ? `<a class="thumb-wrap" href="${escapeHtml(link.url)}" target="_blank" rel="noopener">
+         <img src="${escapeHtml(link.thumbnail_url)}" alt="" loading="lazy" />
+         <div class="play-overlay"></div>
+         ${link.duration_sec ? `<div class="duration-badge">${fmtDur(link.duration_sec)}</div>` : ""}
+       </a>`
+    : "";
+
+  const eng = link.engagement_score || 0;
+  // Engagement score is 0..1; map to %. Most YT Shorts land 0–10%, so cap visual at 10%.
+  const engPct = Math.min(100, eng * 1000);
+
+  const tags = (link.signal_tags || []).slice(0, 4).map(t =>
+    `<span class="tag">${escapeHtml(t)}</span>`).join("");
+  const archetypeTag = link.query?.falsifier
+    ? `<span class="tag falsifier">⚠ ${escapeHtml(link.query.archetype_name)}</span>`
+    : `<span class="tag">${escapeHtml(link.query?.archetype_name || "")}</span>`;
+  // L5 cross-platform chip — present when this evidence was discovered via
+  // more than one channel (e.g. YT Shorts API + Brave's TikTok index).
+  const alsoFoundOn = (link.also_found_on || []).slice(0, 4).map(c =>
+    `<span class="tag short-video" style="border-color: var(--teal-dim);">↔ ${escapeHtml(c)}</span>`
+  ).join("");
+
+  const topComment = (link.top_comments && link.top_comments.length)
+    ? `<div class="top-comment">${escapeHtml(link.top_comments[0])}</div>` : "";
+
+  card.innerHTML = `
+    ${thumb}
+    <div class="body">
+      <div class="title"><a href="${escapeHtml(link.url)}" target="_blank" rel="noopener">${escapeHtml(link.title || link.url)}</a></div>
+      <div class="creator">${escapeHtml(link.creator || link.channel)}</div>
+      <div class="meta">
+        ${link.view_count != null ? `<div><span class="icon">▶</span>${fmtCount(link.view_count)}</div>` : ""}
+        ${link.like_count != null ? `<div><span class="icon">♥</span>${fmtCount(link.like_count)}</div>` : ""}
+        ${link.comment_count != null ? `<div><span class="icon">💬</span>${fmtCount(link.comment_count)}</div>` : ""}
+      </div>
+      ${eng ? `<div class="engagement-bar"><div class="fill" style="width:${engPct}%"></div></div>` : ""}
+      <div class="verdict-row">
+        <span class="verdict-badge ${link.verdict || "tangential"}">${link.verdict || "tangential"}</span>
+        <span class="confidence">conf ${link.confidence != null ? link.confidence.toFixed(2) : "—"}</span>
+      </div>
+      <div class="tags">${archetypeTag}${alsoFoundOn}${tags}</div>
+      ${topComment}
+    </div>
+  `;
+  return card;
+}
+
+// ── PAST RUNS (Step 14 — memory store) ───────────────────────────────────
+async function loadPastRuns(filter) {
+  const q = filter ? `?hypothesis_id=${encodeURIComponent(filter)}&limit=200` : "?limit=100";
+  let data;
+  try {
+    const r = await fetch(`${API}/memory/jobs${q}`);
+    if (!r.ok) throw new Error(await r.text());
+    data = await r.json();
+  } catch (e) {
+    $("past-runs-table").innerHTML = `<div style="padding:12px;color:var(--refutes);">Failed to load: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  const tbl = $("past-runs-table");
+  tbl.innerHTML = "";
+  const jobs = data.jobs || [];
+  if (jobs.length === 0) {
+    $("past-runs-empty").hidden = false;
+    return;
+  }
+  $("past-runs-empty").hidden = true;
+
+  const header = document.createElement("div");
+  header.className = "past-run-row header";
+  header.innerHTML = `<div>JOB ID</div><div>HYPOTHESIS</div><div>STATUS</div><div>VERDICTS (S/R/T)</div><div>CHANNELS</div><div>ELAPSED</div>`;
+  tbl.appendChild(header);
+
+  for (const j of jobs) {
+    const row = document.createElement("div");
+    row.className = "past-run-row";
+    const vc = j.verdict_counts || {};
+    const ch = (j.channels_used || []).length;
+    const el = j.elapsed_sec != null ? `${Number(j.elapsed_sec).toFixed(1)}s` : "—";
+    const statusIcon = ({done:"✅",error:"❌",partial:"⚠",running:"🔄"})[j.status] || "○";
+    row.innerHTML = `
+      <div class="job-id">${escapeHtml(j.job_id || "?")}</div>
+      <div class="stmt" title="${escapeHtml(j.statement || '')}">
+        <strong>${escapeHtml(j.hypothesis_id || "?")}</strong>: ${escapeHtml((j.statement||'').slice(0,80))}
+      </div>
+      <div>${statusIcon} ${j.status}</div>
+      <div style="font-family: ui-monospace,monospace; font-size: 11px;">
+        <span style="color: var(--supports);">S${vc.supports||0}</span>
+        <span style="color: var(--refutes);">R${vc.refutes||0}</span>
+        <span style="color: var(--tangential);">T${vc.tangential||0}</span>
+      </div>
+      <div class="ts">${ch} channels</div>
+      <div class="ts">${el}</div>
+    `;
+    row.addEventListener("click", async () => {
+      // Re-load the verdict grid from this past job
+      $("job-meta").textContent = `[from memory]  job_id=${j.job_id}  hypothesis_id=${j.hypothesis_id}`;
+      $("supports-list").innerHTML = "";
+      $("refutes-list").innerHTML = "";
+      $("tangential-list").innerHTML = "";
+      $("log").innerHTML = `<div class="ev"><span class="kind">memory_restore</span> Loaded ${escapeHtml(j.job_id)} from disk</div>`;
+      currentJobId = j.job_id;
+      $("download-csv").href = `${API}/jobs/${j.job_id}/results.csv?wait=true`;
+      $("download-json").href = `${API}/jobs/${j.job_id}/results?wait=true&download=1`;
+      $("download-bar").hidden = false;
+      await loadResults(j.job_id);
+      document.getElementById("results-area").scrollIntoView({behavior: "smooth"});
+    });
+    tbl.appendChild(row);
+  }
+}
+
+$("past-runs-refresh").addEventListener("click", () => loadPastRuns($("past-runs-filter").value.trim()));
+$("past-runs-filter").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loadPastRuns($("past-runs-filter").value.trim());
+});
+$("past-runs-section").addEventListener("toggle", (e) => {
+  if (e.target.open && $("past-runs-table").children.length === 0) {
+    loadPastRuns("");
+  }
+});
+
+// ── BATCH UPLOAD ─────────────────────────────────────────────────────────
+let currentCSVText = null;
+let currentBatchId = null;
+let currentBatchEventSource = null;
+let batchEventCount = 0;
+let batchMembers = []; // refreshed from preview, then mutated by SSE
+
+const dz = $("drop-zone");
+const fileInput = $("csv-input");
+
+dz.addEventListener("click", () => fileInput.click());
+dz.addEventListener("dragover", (e) => {
+  e.preventDefault(); dz.classList.add("dragover");
+});
+dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+dz.addEventListener("drop", (e) => {
+  e.preventDefault(); dz.classList.remove("dragover");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+async function handleFile(file) {
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    alert("Expected a .csv file"); return;
+  }
+  $("csv-filename").textContent = `📄 ${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+  currentCSVText = await file.text();
+
+  // Send to /preview to get parsed counts + pair detection + errors
+  const fd = new FormData();
+  fd.append("file", file);
+  let preview;
+  try {
+    const r = await fetch(`${API}/batch/preview`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    preview = await r.json();
+  } catch (e) {
+    $("batch-preview").hidden = false;
+    $("batch-preview").innerHTML = `<div class="preview-title" style="color: var(--refutes);">Preview failed</div><div style="font-size: 11px;">${escapeHtml(e.message)}</div>`;
+    $("batch-start").disabled = true;
+    return;
+  }
+  renderPreview(preview);
+}
+
+function renderPreview(p) {
+  const el = $("batch-preview");
+  el.hidden = false;
+
+  const cpHtml = (p.core_problems || []).map(cp => `
+    <div class="cp-block">
+      <div><span class="cp-id">${escapeHtml(cp.core_problem_id)}</span>
+        · ${cp.hypothesis_count} hypothesis${cp.hypothesis_count === 1 ? "" : "es"}</div>
+      <div class="cp-stmt">${escapeHtml(cp.statement || "(no core problem statement)")}</div>
+    </div>
+  `).join("");
+
+  const pairs = (p.detected_pairs || []).map(pair =>
+    `<span class="tag">↔ ${escapeHtml(pair.join(" ↔ "))}</span>`
+  ).join(" ");
+
+  const errs = (p.errors || []).map(e =>
+    `<div><span class="tag">row ${e.row_index}</span> ${escapeHtml(e.message)}</div>`
+  ).join("");
+
+  el.innerHTML = `
+    <div class="preview-title">
+      ${p.hypothesis_count} hypothesis${p.hypothesis_count === 1 ? "" : "es"}
+      across ${p.core_problem_count} core problem${p.core_problem_count === 1 ? "" : "s"}
+    </div>
+    ${cpHtml}
+    ${pairs ? `<div class="pair-list"><strong>MECE pairs detected:</strong> ${pairs}</div>` : ""}
+    ${errs ? `<div class="err-list"><strong>Errors:</strong> ${errs}</div>` : ""}
+  `;
+  $("batch-start").disabled = p.hypothesis_count === 0;
+}
+
+$("batch-clear").addEventListener("click", () => {
+  currentCSVText = null;
+  $("csv-filename").textContent = "";
+  $("batch-preview").hidden = true;
+  $("batch-preview").innerHTML = "";
+  $("batch-start").disabled = true;
+  fileInput.value = "";
+});
+
+$("batch-start").addEventListener("click", async () => {
+  if (!currentCSVText) { alert("Upload a CSV first"); return; }
+  $("batch-start").disabled = true;
+  $("batch-start").innerHTML = '<span class="loader"></span> Starting…';
+
+  let batch;
+  try {
+    const r = await fetch(`${API}/batch/start`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        csv_text: currentCSVText,
+        window_label: $("batch-window").value,
+        use_llm: $("batch-use-llm").checked,
+        max_triage: parseInt($("batch-max-triage").value) || 5,
+        concurrency: parseInt($("batch-concurrency").value) || 3,
+      }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    batch = await r.json();
+  } catch (e) {
+    alert("Batch start failed: " + e.message);
+    $("batch-start").disabled = false;
+    $("batch-start").textContent = "Run batch";
+    return;
+  }
+
+  currentBatchId = batch.batch_id;
+  $("batch-running").hidden = false;
+  $("batch-meta").textContent =
+    `batch_id=${batch.batch_id}  members=${batch.member_count}  ` +
+    `core_problems=${batch.core_problem_count}  concurrency=${batch.concurrency}`;
+  batchEventCount = 0;
+  $("batch-event-count").textContent = "";
+
+  // Hydrate the table from the batch status endpoint (gives full member list)
+  const status = await (await fetch(`${API}/batch/${batch.batch_id}`)).json();
+  batchMembers = status.members;
+  renderBatchTable(status);
+
+  $("batch-download-bar").hidden = true;
+
+  // Subscribe SSE
+  if (currentBatchEventSource) currentBatchEventSource.close();
+  const es = new EventSource(`${API}/batch/${batch.batch_id}/events`);
+  currentBatchEventSource = es;
+  const knownKinds = [
+    "batch_start","member_start","pipeline_start","stage_start","stage_done",
+    "channel_discovered","pipeline_complete","pipeline_error",
+    "member_done","member_error","batch_complete","stream_end",
+  ];
+  knownKinds.forEach(kind => {
+    es.addEventListener(kind, async (e) => {
+      let data; try { data = JSON.parse(e.data); } catch { return; }
+      batchEventCount += 1;
+      $("batch-event-count").textContent = `(${batchEventCount} events)`;
+
+      // Update member row on member-level events
+      if (kind === "member_start" || kind === "member_done" || kind === "member_error") {
+        const hypId = data.hypothesis_id;
+        const m = batchMembers.find(m => m.hypothesis_id === hypId);
+        if (m) {
+          if (kind === "member_start") m.status = "running";
+          if (kind === "member_done") {
+            m.status = data.data?.status || "done";
+            if (data.data?.verdict_counts) m.verdict_counts = data.data.verdict_counts;
+            if (data.data?.elapsed_sec) m.elapsed_sec = data.data.elapsed_sec;
+            m.error = data.data?.error || null;
+          }
+          if (kind === "member_error") {
+            m.status = "error";
+            m.error = data.data?.error;
+          }
+          // re-fetch via batch status for any job-level fields
+          updateBatchAggregateStats();
+          renderBatchTable({members: batchMembers});
+        }
+      }
+
+      // Show stage progress in the per-row title (lightweight)
+      if (kind === "stage_start" || kind === "stage_done") {
+        const hypId = data.hypothesis_id;
+        const stage = data.stage;
+        if (hypId && stage) {
+          const row = document.querySelector(`[data-hyp-id="${CSS.escape(hypId)}"] .hyp-stage`);
+          if (row) row.textContent = (kind === "stage_done" ? "✓ " : "→ ") + stage;
+        }
+      }
+
+      // Terminal
+      if (kind === "batch_complete" || kind === "stream_end") {
+        es.close();
+        currentBatchEventSource = null;
+        // Final refresh of batch status to ensure all members fully populated
+        try {
+          const final = await (await fetch(`${API}/batch/${batch.batch_id}`)).json();
+          batchMembers = final.members;
+          renderBatchTable(final);
+          updateBatchAggregateStats();
+        } catch {}
+        $("batch-download-csv").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true`;
+        $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
+        $("batch-download-bar").hidden = false;
+        $("batch-start").disabled = false;
+        $("batch-start").textContent = "Run batch";
+      }
+    });
+  });
+  es.onerror = () => { /* auto-retries; terminal events finalize */ };
+});
+
+function updateBatchAggregateStats() {
+  let done = 0, sum_s = 0, sum_r = 0, sum_t = 0;
+  for (const m of batchMembers) {
+    if (m.status === "done" || m.status === "error") done++;
+    if (m.verdict_counts) {
+      sum_s += m.verdict_counts.supports || 0;
+      sum_r += m.verdict_counts.refutes || 0;
+      sum_t += m.verdict_counts.tangential || 0;
+    }
+  }
+  $("batch-stat-done").textContent = `${done} / ${batchMembers.length}`;
+  $("batch-stat-s").textContent = sum_s;
+  $("batch-stat-r").textContent = sum_r;
+  $("batch-stat-t").textContent = sum_t;
+}
+
+function renderBatchTable(status) {
+  const tbl = $("batch-table");
+  tbl.innerHTML = "";
+  const header = document.createElement("div");
+  header.className = "batch-row header";
+  header.innerHTML = `
+    <div></div>
+    <div>HYPOTHESIS</div>
+    <div>CP</div>
+    <div>STATUS</div>
+    <div>VERDICTS</div>
+    <div>TRIAGE</div>
+    <div>ELAPSED</div>
+  `;
+  tbl.appendChild(header);
+
+  for (const m of (status.members || batchMembers)) {
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    row.dataset.hypId = m.hypothesis_id;
+    row.dataset.jobId = m.job_id || "";
+
+    const statusIcon = ({
+      queued: "⏳", running: "🔄", done: "✅", error: "❌", skipped: "⊘",
+    })[m.status] || "○";
+
+    const vc = m.verdict_counts || {};
+    const verdicts = (m.status === "done" || m.status === "error")
+      ? `<span class="verdict-pill s">S${vc.supports||0}</span>
+         <span class="verdict-pill r">R${vc.refutes||0}</span>
+         <span class="verdict-pill t">T${vc.tangential||0}</span>`
+      : `<span class="hyp-stage" style="color: var(--text-faint); font-size: 11px;">—</span>`;
+    const elapsed = m.elapsed_sec != null ? `${m.elapsed_sec.toFixed(1)}s` : "—";
+
+    row.innerHTML = `
+      <div class="status-dot">${statusIcon}</div>
+      <div class="hyp-title" title="${escapeHtml(m.statement || '')}">${escapeHtml(m.hypothesis_id)}: ${escapeHtml((m.statement||'').slice(0, 80))}</div>
+      <div class="cp">${escapeHtml(m.core_problem_id || "")}</div>
+      <div>${m.status}</div>
+      <div class="verdict-pills">${verdicts}</div>
+      <div style="color: var(--text-faint); font-family: ui-monospace,monospace; font-size: 11px;">t=${m.max_triage}</div>
+      <div class="elapsed">${elapsed}</div>
+    `;
+    row.addEventListener("click", () => loadMemberIntoGrid(m));
+    tbl.appendChild(row);
+  }
+}
+
+async function loadMemberIntoGrid(member) {
+  // Mark expanded row
+  document.querySelectorAll(".batch-row").forEach(r => r.classList.remove("expanded"));
+  const row = document.querySelector(`[data-hyp-id="${CSS.escape(member.hypothesis_id)}"]`);
+  if (row) row.classList.add("expanded");
+
+  if (!member.job_id) {
+    alert("This hypothesis hasn't started yet — no job to display.");
+    return;
+  }
+  // Reuse the existing single-hypothesis result view by loading this member's
+  // job into the same grid
+  $("job-meta").textContent = `[from batch ${currentBatchId}]  job_id=${member.job_id}  hypothesis_id=${member.hypothesis_id}`;
+  $("supports-list").innerHTML = "";
+  $("refutes-list").innerHTML = "";
+  $("tangential-list").innerHTML = "";
+  await loadResults(member.job_id);
+  // Scroll the results grid into view
+  document.getElementById("results-area").scrollIntoView({behavior: "smooth", block: "start"});
+}
+</script>
+</body>
+</html>

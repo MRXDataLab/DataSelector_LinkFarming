@@ -1,0 +1,155 @@
+"""Brave Search API backend — PRIMARY for web/news/forums/videos.
+
+Free tier: 2 000 queries/month. Rate limit ~1 req/sec.
+Endpoints used:
+    web    : /res/v1/web/search
+    news   : /res/v1/news/search   (+freshness)
+    videos : /res/v1/videos/search
+    forums : web with appended `site:` operator
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from typing import List, Optional
+from urllib.parse import quote_plus
+
+import requests
+
+from ..models import QueryVertical, RawResult, TimeWindow
+from ..temporal import to_brave_params
+from .base import SearchBackend
+
+log = logging.getLogger(__name__)
+
+
+class BraveBackend(SearchBackend):
+    id = "brave"
+
+    def __init__(self, api_key: Optional[str] = None) -> None:
+        self.api_key = api_key or os.getenv("BRAVE_API_KEY", "")
+        self.available = bool(self.api_key)
+
+    async def search(
+        self,
+        query: str,
+        vertical: QueryVertical = "web",
+        count: int = 10,
+        window: Optional[TimeWindow] = None,
+    ) -> List[RawResult]:
+        if not self.available:
+            return []
+        return await asyncio.to_thread(self._search_sync, query, vertical, count, window)
+
+    # ── private ────────────────────────────────────────────────────────────
+
+    def _search_sync(
+        self,
+        query: str,
+        vertical: QueryVertical,
+        count: int,
+        window: Optional[TimeWindow],
+    ) -> List[RawResult]:
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": self.api_key,
+        }
+        freshness = (to_brave_params(window) or {}).get("freshness") if window else None
+
+        try:
+            if vertical == "news":
+                return self._news(query, count, freshness, headers)
+            if vertical == "videos":
+                return self._videos(query, count, headers)
+            return self._web(query, vertical, count, freshness, headers)
+        except requests.HTTPError as e:
+            log.warning("Brave %s HTTP %s for %r", vertical, e.response.status_code, query[:60])
+            return []
+        except Exception as e:
+            log.warning("Brave %s failed for %r: %s", vertical, query[:60], e)
+            return []
+
+    def _web(
+        self,
+        query: str,
+        vertical: QueryVertical,
+        count: int,
+        freshness: Optional[str],
+        headers: dict,
+    ) -> List[RawResult]:
+        q = query
+        if vertical == "forums":
+            q = f"{query} (site:reddit.com OR site:quora.com)"
+        url = f"https://api.search.brave.com/res/v1/web/search?q={quote_plus(q)}&count={count}"
+        if freshness:
+            url += f"&freshness={freshness}"
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return [
+            RawResult(
+                url=it.get("url", ""),
+                title=it.get("title", ""),
+                snippet=it.get("description", ""),
+                backend=self.id,
+                vertical=vertical,
+                raw_metadata={"page_age": it.get("page_age", "")},
+            )
+            for it in data.get("web", {}).get("results", [])[:count]
+            if it.get("url")
+        ]
+
+    def _news(
+        self,
+        query: str,
+        count: int,
+        freshness: Optional[str],
+        headers: dict,
+    ) -> List[RawResult]:
+        url = (
+            f"https://api.search.brave.com/res/v1/news/search"
+            f"?q={quote_plus(query)}&count={count}"
+        )
+        if freshness:
+            url += f"&freshness={freshness}"
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return [
+            RawResult(
+                url=it.get("url", ""),
+                title=it.get("title", ""),
+                snippet=it.get("description", ""),
+                backend=self.id,
+                vertical="news",
+                raw_metadata={
+                    "age": it.get("age", ""),
+                    "page_age": it.get("page_age", ""),
+                },
+            )
+            for it in data.get("results", [])[:count]
+            if it.get("url")
+        ]
+
+    def _videos(self, query: str, count: int, headers: dict) -> List[RawResult]:
+        url = (
+            f"https://api.search.brave.com/res/v1/videos/search"
+            f"?q={quote_plus(query)}&count={count}"
+        )
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return [
+            RawResult(
+                url=it.get("url", ""),
+                title=it.get("title", ""),
+                snippet=it.get("description", ""),
+                backend=self.id,
+                vertical="videos",
+                raw_metadata={"duration": (it.get("video") or {}).get("duration", "")},
+            )
+            for it in data.get("results", [])[:count]
+            if it.get("url")
+        ]

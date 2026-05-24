@@ -1,0 +1,465 @@
+"""Step 8 — Pipeline orchestrator.
+
+Runs the full L0 → L7 pipeline for **one hypothesis** and emits structured
+events along the way so a frontend SSE stream (Step 9) can stitch a live
+progress view. The orchestrator is intentionally synchronous in shape
+(one hypothesis in → one ranked link list out); per-hypothesis parallelism
+lives in `job_runner.py`.
+
+Pipeline order (channels with no registered discoverer are gracefully
+skipped — Day-10 demo ships YouTube Shorts only):
+
+  L0  decompose                — pure-Python
+  L1  score_channels           — deterministic
+  L2  synthesize_queries       — Gemini slot-fill + Trends amplifier
+  L3  discover (parallel/chan) — per-channel native discoverer
+  L4  temporal filter          — already applied at L3 (API-side window)
+  L6  triage                   — top-30 ranked + Gemini batch verdict
+  L7  group + emit             — supports/refutes/tangential buckets
+
+Event types emitted via the injected `emit` callback (Step 9 wires this
+to an `asyncio.Queue` per subscriber for SSE):
+
+  pipeline_start
+  stage_start / stage_done             (one pair per L0/L1/L2/L3/L6/L7)
+  channel_discovered                   (one per channel after its discovery)
+  pipeline_complete
+  pipeline_error
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+
+from .cost_meter import (
+    current_job_id as _current_job_id,
+    default_cost_cap_usd,
+    get_meter,
+    reset_current_job,
+    set_current_job,
+)
+from .decomposer import Decomposition, decompose
+from .dedup import (
+    LinkCluster,
+    cluster_links,
+    cluster_stats,
+    propagate_verdicts_to_members,
+    representatives,
+)
+from .discoverers.base import Discoverer
+from .models import (
+    ChannelFit,
+    ChannelId,
+    DiscoveredLink,
+    TimeWindow,
+    TypedQuery,
+)
+from .query_synthesizer import synthesize_queries
+from .source_selector import score_channels
+from .triage import group_by_verdict, triage
+
+log = logging.getLogger(__name__)
+
+
+# ─── Event type ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class PipelineEvent:
+    """Single structured event from the orchestrator.
+
+    `kind` is the discriminator (matches the SSE event name in Step 9).
+    `data` is a JSON-serialisable dict — keep payloads small; large blobs
+    (full link lists) belong on the JobState, not on the wire per-event.
+    """
+
+    kind: str
+    hypothesis_id: str
+    stage: Optional[str] = None
+    timestamp: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "hypothesis_id": self.hypothesis_id,
+            "stage": self.stage,
+            "timestamp": self.timestamp.isoformat(),
+            "data": self.data,
+        }
+
+
+Emit = Callable[[PipelineEvent], None]
+
+
+def _noop_emit(_ev: PipelineEvent) -> None:
+    """Default emit when the caller doesn't care about events."""
+
+
+# ─── Discoverer registry ─────────────────────────────────────────────────────
+
+
+class DiscovererRegistry:
+    """Maps channel_id → Discoverer instance.
+
+    Hosts can wire a richer registry later (Reddit, PAA, News in Step 10;
+    TikTok in Step 11; etc.). For Day-10 demo we ship YouTube Shorts only.
+    """
+
+    def __init__(self) -> None:
+        self._registry: Dict[ChannelId, Discoverer] = {}
+
+    def register(self, discoverer: Discoverer) -> None:
+        if not discoverer.channel_id:
+            raise ValueError("Discoverer.channel_id must be set")
+        self._registry[discoverer.channel_id] = discoverer
+
+    def get(self, channel: ChannelId) -> Optional[Discoverer]:
+        return self._registry.get(channel)
+
+    def available_channels(self) -> List[ChannelId]:
+        return [cid for cid, d in self._registry.items() if d.available]
+
+    def __contains__(self, channel: ChannelId) -> bool:
+        return channel in self._registry
+
+
+def default_registry() -> DiscovererRegistry:
+    """Convenience: build a registry pre-populated with the live discoverers.
+
+    Order matters for parallel scheduling — short-video first (priority #1
+    hero channel for the Day-10 demo), then long-form text channels.
+
+    9 channels register here. The two unregistered surfaces:
+      • `trends` — pure L2 amplifier, never a discovery target
+      • `instagram_reels` — deferred to v1.1 per locked decision §6.5
+        (lowest-yield short-video surface + most CAPTCHA-prone)
+    """
+    from .discoverers.google_paa import get_google_paa
+    from .discoverers.marketplace import get_marketplace
+    from .discoverers.news import get_news
+    from .discoverers.quora import get_quora
+    from .discoverers.reddit import get_reddit
+    from .discoverers.substack import get_substack
+    from .discoverers.tiktok import get_tiktok
+    from .discoverers.youtube import get_youtube
+    from .discoverers.youtube_shorts import get_youtube_shorts
+
+    reg = DiscovererRegistry()
+    # Short-video (priority #1 first per locked decision)
+    reg.register(get_youtube_shorts())   # Step 6  — hero short-video
+    reg.register(get_tiktok())           # Step 11 — secondary short-video
+    # Long-form video
+    reg.register(get_youtube())          # Step 12 — long-form video (medium/long)
+    # Discussion / Q&A
+    reg.register(get_reddit())           # Step 10 — PRAW or Brave fallback
+    reg.register(get_quora())            # Step 12 — Brave site:quora.com
+    # Search-graph + news
+    reg.register(get_google_paa())       # Step 10 — headless Chromium
+    reg.register(get_news())             # Step 10 — Brave news
+    # Long-form essays + reviews
+    reg.register(get_substack())         # Step 12 — Brave site:substack.com
+    reg.register(get_marketplace())      # Step 12 — Brave w/ review hosts
+    return reg
+
+
+# ─── Pipeline result ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class PipelineResult:
+    """Full output of one hypothesis pipeline run."""
+
+    hypothesis_id: str
+    decomposition: Decomposition
+    channel_fits: List[ChannelFit]
+    queries_by_channel: Dict[ChannelId, List[TypedQuery]]
+    links_by_channel: Dict[ChannelId, List[DiscoveredLink]]
+    triaged_links: List[DiscoveredLink]
+    grouped: Dict[str, List[DiscoveredLink]]  # supports / refutes / tangential
+    elapsed_sec: float
+    channels_skipped: List[ChannelId]
+    # L5 dedup output — what triage actually saw vs what discovery returned.
+    # `clusters` carries the full collapse graph (representatives + members)
+    # so callers can show "this link was also found on X, Y" in the UI.
+    clusters: List[LinkCluster] = field(default_factory=list)
+    # Step 14 — cost meter snapshot at pipeline end. `None` when the meter
+    # had nothing to report (e.g. use_llm=False + no YT calls).
+    cost: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _filter_by_window(
+    links: Sequence[DiscoveredLink], window: TimeWindow
+) -> List[DiscoveredLink]:
+    """Drop links whose `observed_at` falls outside the window.
+
+    Most discoverers apply the API-side time filter already (per the L4
+    locked decision § temporal). This is a belt-and-suspenders client-side
+    pass for channels without native temporal support (TikTok, IG Reels,
+    Substack, Marketplace).
+    """
+    kept: List[DiscoveredLink] = []
+    for lk in links:
+        oa = lk.observed_at
+        if oa is None:
+            kept.append(lk)
+            continue
+        if oa.tzinfo is None:
+            oa = oa.replace(tzinfo=timezone.utc)
+        if window.start <= oa <= window.end:
+            kept.append(lk)
+    return kept
+
+
+# ─── Main pipeline ───────────────────────────────────────────────────────────
+
+
+async def run_pipeline(
+    hypothesis: Dict[str, Any],
+    window: TimeWindow,
+    *,
+    registry: Optional[DiscovererRegistry] = None,
+    emit: Emit = _noop_emit,
+    use_llm: bool = True,
+    max_triage: int = 30,
+    discover_count_per_query: int = 10,
+    max_links_per_channel: int = 50,
+    job_id: Optional[str] = None,
+    cost_cap_usd: Optional[float] = None,
+) -> PipelineResult:
+    """Run L0–L7 for one hypothesis and emit progress events.
+
+    Never raises — catastrophic failures populate `PipelineResult.error`
+    and emit a `pipeline_error` event. Channel discoveries are run in
+    parallel; failures in one channel don't take down the others.
+    """
+    started_at = time.monotonic()
+    hyp_id = (
+        hypothesis.get("hypothesis_id")
+        or hypothesis.get("id")
+        or "unknown"
+    )
+    reg = registry or default_registry()
+    channels_skipped: List[ChannelId] = []
+
+    # Step 14: bind the ambient job_id + per-job cost cap. The ContextVar
+    # propagates into asyncio.to_thread() calls so YT discoverers + _llm
+    # can charge the meter without explicit threading. We use `job_id or
+    # hyp_id` — when running outside the job_runner (e.g. direct
+    # run_pipeline calls in tests) the hypothesis_id is a reasonable proxy.
+    meter_job_id = job_id or hyp_id
+    cv_token = set_current_job(meter_job_id)
+    effective_cap = cost_cap_usd if cost_cap_usd is not None else default_cost_cap_usd()
+    get_meter().set_cap(meter_job_id, effective_cap)
+
+    emit(PipelineEvent(
+        kind="pipeline_start",
+        hypothesis_id=hyp_id,
+        data={
+            "window_label": window.label,
+            "use_llm": use_llm,
+            "available_channels": list(reg.available_channels()),
+            "cost_cap_usd": effective_cap,
+            "meter_job_id": meter_job_id,
+        },
+    ))
+
+    # ── L0 decompose ──────────────────────────────────────────────────────
+    emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L0_decompose"))
+    decomp = decompose(hypothesis)
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L0_decompose",
+        data={
+            "primary_entity": decomp.primary_entity,
+            "n_entities": len(decomp.entities),
+            "n_pains": len(decomp.pains),
+            "n_aspirations": len(decomp.aspirations),
+            "geo_hints": decomp.geo_hints,
+        },
+    ))
+
+    # ── L1 score channels ─────────────────────────────────────────────────
+    emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L1_source_select"))
+    fits = score_channels(hypothesis, decomp)
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L1_source_select",
+        data={
+            "top_channels": [
+                {"channel": f.channel, "fit_score": f.fit_score}
+                for f in fits
+            ],
+        },
+    ))
+
+    if not fits:
+        result = PipelineResult(
+            hypothesis_id=hyp_id, decomposition=decomp, channel_fits=[],
+            queries_by_channel={}, links_by_channel={}, triaged_links=[],
+            grouped={"supports": [], "refutes": [], "tangential": []},
+            elapsed_sec=time.monotonic() - started_at,
+            channels_skipped=channels_skipped,
+            error="L1 produced no channels above threshold",
+        )
+        emit(PipelineEvent(
+            kind="pipeline_error", hypothesis_id=hyp_id,
+            data={"error": result.error},
+        ))
+        return result
+
+    # ── L2 synthesize queries ─────────────────────────────────────────────
+    emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L2_query_synth"))
+    queries_by_channel = synthesize_queries(
+        hypothesis, decomp, fits, window, use_llm=use_llm
+    )
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L2_query_synth",
+        data={
+            "queries_per_channel": {
+                ch: len(qs) for ch, qs in queries_by_channel.items()
+            },
+            "total_queries": sum(len(qs) for qs in queries_by_channel.values()),
+        },
+    ))
+
+    # ── L3 discovery (parallel per channel) ───────────────────────────────
+    emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L3_discover"))
+    links_by_channel: Dict[ChannelId, List[DiscoveredLink]] = {}
+
+    async def _run_channel(channel: ChannelId, queries: List[TypedQuery]) -> None:
+        discoverer = reg.get(channel)
+        if discoverer is None or not discoverer.available:
+            channels_skipped.append(channel)
+            emit(PipelineEvent(
+                kind="channel_discovered", hypothesis_id=hyp_id, stage="L3_discover",
+                data={
+                    "channel": channel,
+                    "n_links": 0,
+                    "skipped": True,
+                    "reason": "no_discoverer" if discoverer is None else "unavailable",
+                },
+            ))
+            return
+        try:
+            links = await discoverer.batch_discover(
+                queries,
+                window,
+                count_per_query=discover_count_per_query,
+                max_total=max_links_per_channel,
+            )
+        except Exception as e:
+            log.warning("discoverer %s raised: %s", channel, e)
+            links = []
+        # L4 client-side window guard (no-op when discoverer applied it natively)
+        links = _filter_by_window(links, window)
+        links_by_channel[channel] = links
+        emit(PipelineEvent(
+            kind="channel_discovered", hypothesis_id=hyp_id, stage="L3_discover",
+            data={
+                "channel": channel,
+                "n_links": len(links),
+                "n_queries_run": len(queries),
+                "skipped": False,
+            },
+        ))
+
+    await asyncio.gather(*(
+        _run_channel(ch, qs) for ch, qs in queries_by_channel.items()
+    ))
+    total_discovered = sum(len(v) for v in links_by_channel.values())
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L3_discover",
+        data={
+            "total_links": total_discovered,
+            "links_per_channel": {ch: len(v) for ch, v in links_by_channel.items()},
+            "channels_skipped": channels_skipped,
+        },
+    ))
+
+    # ── L5 dedup + cross-platform clustering ──────────────────────────────
+    all_links: List[DiscoveredLink] = [
+        link for links in links_by_channel.values() for link in links
+    ]
+    emit(PipelineEvent(
+        kind="stage_start", hypothesis_id=hyp_id, stage="L5_dedup",
+        data={"input_links": len(all_links)},
+    ))
+    clusters = cluster_links(all_links)
+    triage_input = representatives(clusters)
+    dedup_stats = cluster_stats(clusters)
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L5_dedup",
+        data=dedup_stats,
+    ))
+
+    # ── L6 triage (on representatives only) ───────────────────────────────
+    emit(PipelineEvent(
+        kind="stage_start", hypothesis_id=hyp_id, stage="L6_triage",
+        data={"n_candidates": len(triage_input), "max_triage": max_triage},
+    ))
+    if triage_input:
+        triaged = await triage(
+            hypothesis, decomp, triage_input,
+            max_triage=max_triage,
+            use_llm=use_llm,
+        )
+    else:
+        triaged = []
+    # Push verdicts down to non-representative cluster members so any
+    # per-member CSV export carries the same supports/refutes/confidence.
+    propagate_verdicts_to_members(clusters)
+    grouped = group_by_verdict(triaged)
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L6_triage",
+        data={
+            "verdict_counts": {k: len(v) for k, v in grouped.items()},
+            "n_triaged": len(triaged),
+        },
+    ))
+
+    # ── L7 emit complete ──────────────────────────────────────────────────
+    elapsed = time.monotonic() - started_at
+
+    # Step 14: snapshot the cost ledger before the ContextVar resets.
+    cost_entry = get_meter().get(meter_job_id)
+    cost_payload = cost_entry.to_dict() if cost_entry is not None else None
+    if cost_payload is not None:
+        emit(PipelineEvent(
+            kind="cost_summary", hypothesis_id=hyp_id,
+            data=cost_payload,
+        ))
+
+    result = PipelineResult(
+        hypothesis_id=hyp_id,
+        decomposition=decomp,
+        channel_fits=fits,
+        queries_by_channel=queries_by_channel,
+        links_by_channel=links_by_channel,
+        triaged_links=triaged,
+        grouped=grouped,
+        elapsed_sec=elapsed,
+        channels_skipped=channels_skipped,
+        clusters=clusters,
+        cost=cost_payload,
+    )
+    emit(PipelineEvent(
+        kind="pipeline_complete", hypothesis_id=hyp_id,
+        data={
+            "elapsed_sec": round(elapsed, 3),
+            "verdict_counts": {k: len(v) for k, v in grouped.items()},
+            "channels_used": list(links_by_channel.keys()),
+            "channels_skipped": channels_skipped,
+            "total_usd": cost_payload["total_usd"] if cost_payload else 0.0,
+        },
+    ))
+    reset_current_job(cv_token)
+    return result
