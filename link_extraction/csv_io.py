@@ -13,24 +13,38 @@ Two responsibilities:
   2. **Export helpers** that the API layer reuses for single-job and
      batch result CSVs. Pure functions, no FastAPI dependency.
 
-CSV input format (column names, all case-insensitive):
+CSV input format (column names, all case-insensitive). Aliases accepted —
+see `_COL_ALIASES` (e.g. `hypothesis_statement` → `statement`, `id` →
+`hypothesis_id`, `force` → `force_assignment`, etc.):
 
     statement                  REQUIRED — the hypothesis sentence
+                               (aliases: hypothesis_statement, hypothesis,
+                                claim, claim_statement)
     hypothesis_id              OPTIONAL — auto-generated h_auto_001+ if absent
+                               (aliases: id, hyp_id)
     core_problem_id            OPTIONAL — groups rows; "_uncategorized" if absent
+                               (aliases: cp_id)
     core_problem_statement     OPTIONAL
+                               (aliases: cp_statement, core_problem)
     dimension                  OPTIONAL — one of 10 enum values
-    force_assignment           OPTIONAL — one of 5 force names
-    investigation_priority     OPTIONAL — high|medium|low
+    force_assignment           OPTIONAL — one of 5 force names (alias: force)
+    investigation_priority     OPTIONAL — high|medium|low (alias: priority)
     expected_signals           OPTIONAL — pipe-delimited inside cell ("a|b|c")
+                               (alias: signals)
     expected_counter_signals   OPTIONAL — pipe-delimited inside cell
+                               (alias: counter_signals)
     contrarian_pair_id         OPTIONAL — references another hypothesis_id
+                               (aliases: pair_id, contrarian)
     rationale                  OPTIONAL
+    mece_cluster_id            OPTIONAL — host's MECE clustering tag
+                               (aliases: mece_cluster, cluster_id)
     window_label               OPTIONAL — per-row time-window override
+                               (alias: window)
     max_triage                 OPTIONAL — per-row triage budget override
+                               (aliases: triage, triage_budget)
 
 Unknown columns are silently ignored — keeps the parser tolerant of analyst
-CSVs that carry extra notes/labels columns.
+CSVs that carry extra notes/labels columns (`generation_source`, etc.).
 """
 from __future__ import annotations
 
@@ -47,12 +61,42 @@ log = logging.getLogger(__name__)
 _TEXT_COLS = {
     "statement", "hypothesis_id", "core_problem_id", "core_problem_statement",
     "dimension", "force_assignment", "investigation_priority",
-    "contrarian_pair_id", "rationale",
+    "contrarian_pair_id", "rationale", "mece_cluster_id",
 }
 _LIST_COLS = {"expected_signals", "expected_counter_signals"}
 _OVERRIDE_COLS = {"window_label", "max_triage"}
 
 _REQUIRED = ("statement",)
+
+# Column-name aliases — different Hypothesis Engine exports use different
+# naming conventions for the same field. Aliases are applied during header
+# normalisation, so the rest of the parser sees a single canonical name.
+# Pattern: alternative → canonical.
+_COL_ALIASES: Dict[str, str] = {
+    # The host repo's Hypothesis Engine export uses `hypothesis_statement`
+    # to mirror `core_problem_statement`. Treat as `statement`.
+    "hypothesis_statement": "statement",
+    "hypothesis":           "statement",
+    "claim":                "statement",
+    "claim_statement":      "statement",
+    # Other reasonable aliases
+    "hyp_id":               "hypothesis_id",
+    "id":                   "hypothesis_id",
+    "cp_id":                "core_problem_id",
+    "cp_statement":         "core_problem_statement",
+    "core_problem":         "core_problem_statement",
+    "force":                "force_assignment",
+    "priority":             "investigation_priority",
+    "signals":              "expected_signals",
+    "counter_signals":      "expected_counter_signals",
+    "pair_id":              "contrarian_pair_id",
+    "contrarian":           "contrarian_pair_id",
+    "mece_cluster":         "mece_cluster_id",
+    "cluster_id":           "mece_cluster_id",
+    "window":               "window_label",
+    "triage":               "max_triage",
+    "triage_budget":        "max_triage",
+}
 
 # Delimiter inside list cells (Pipe is robust against commas in CSV cells).
 _INNER_DELIM = "|"
@@ -108,8 +152,13 @@ class ParsedBatch:
 
 
 def _norm_header(name: str) -> str:
-    """Case-fold + strip a CSV column name."""
-    return (name or "").strip().lower().replace(" ", "_")
+    """Case-fold + strip + dealias a CSV column name.
+
+    Aliases let analysts upload Hypothesis Engine CSVs without manually
+    renaming columns. `hypothesis_statement` → `statement`, etc.
+    """
+    raw = (name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return _COL_ALIASES.get(raw, raw)
 
 
 def _parse_list_cell(raw: str) -> List[str]:
@@ -216,7 +265,7 @@ def parse_hypothesis_csv(text: str) -> ParsedBatch:
         }
         for col in (
             "dimension", "force_assignment", "investigation_priority",
-            "contrarian_pair_id", "rationale",
+            "contrarian_pair_id", "rationale", "mece_cluster_id",
             "core_problem_id", "core_problem_statement",
         ):
             val = row.get(col, "").strip()
