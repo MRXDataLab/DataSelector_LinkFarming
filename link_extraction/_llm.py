@@ -1,25 +1,20 @@
-"""Minimal Gemini chat-completion shim for in-module LLM calls.
+"""Minimal Gemini chat-completion shim — Vertex AI only (GCP connector).
 
-Calls Google's Gemini family directly via REST — no SDK, no OpenRouter.
-Two backends, tried in order:
+Single backend by design: every LLM call in this module goes through the
+**Gemini API on Vertex AI** (`aiplatform.googleapis.com`). Auth via
+`VERTEX_AI_API_KEY` (an API key for the global publisher endpoint).
 
-  1. **Gemini API on Vertex AI** (`VERTEX_AI_API_KEY`)
-     Endpoint: aiplatform.googleapis.com (global publisher endpoint)
-     Auth: `x-goog-api-key` header. Enterprise-grade, GCP-billed.
-
-  2. **Gemini API in Google AI Studio** (`GEMINI_API_KEY`)
-     Endpoint: generativelanguage.googleapis.com/v1beta
-     Auth: `?key=` query param. Developer-grade, AI-Studio-billed.
-
-Order is driven by `HYPOTHESIS_PROVIDER` env var:
-  - `gcp_gemini` (host default)  → Vertex first, Studio fallback
-  - anything else / unset        → Studio first, Vertex fallback
+No fallback. No AI Studio path. No OpenRouter. If Vertex is unreachable,
+`call_llm` returns `None` and the caller falls back to its deterministic
+non-LLM path (e.g. `query_synthesizer`'s rule-based slot filler, or
+`triage`'s regex-only verdict).
 
 Same public signature as before:
     call_llm(system_prompt, user_prompt, expect_json=True) -> dict | str | None
 
 When integrated into the host repo, swap this for `services/llm_client.py`
-and register `query_synthesis` in `services/stage_models.PRESETS`.
+if and only if that one ALSO speaks Vertex natively — never route through
+OpenRouter (see memory note `feedback_llm_provider.md`).
 """
 from __future__ import annotations
 
@@ -32,11 +27,9 @@ import requests
 
 log = logging.getLogger(__name__)
 
-# Both endpoints expose the same Gemini families. 2.5-flash is fast, cheap,
-# JSON-reliable; override per call via the `model` kwarg.
+# 2.5-flash is fast, cheap, JSON-reliable; override per call via `model` kwarg.
 DEFAULT_MODEL = "gemini-2.5-flash"
 
-_STUDIO_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _VERTEX_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/{model}:generateContent"
 
 _DEFAULT_TIMEOUT = 30  # seconds
@@ -49,21 +42,9 @@ def _vertex_key() -> str:
     return os.getenv("VERTEX_AI_API_KEY", "").strip()
 
 
-def _studio_key() -> str:
-    return os.getenv("GEMINI_API_KEY", "").strip()
-
-
 def is_available() -> bool:
-    return bool(_vertex_key() or _studio_key())
-
-
-def _backend_order() -> List[str]:
-    """Return ordered backend list based on HYPOTHESIS_PROVIDER hint."""
-    prov = os.getenv("HYPOTHESIS_PROVIDER", "").strip().lower()
-    prefer_vertex = prov == "gcp_gemini"
-    if prefer_vertex:
-        return ["vertex", "studio"]
-    return ["studio", "vertex"]
+    """True when Vertex AI credentials are configured."""
+    return bool(_vertex_key())
 
 
 # ─── Request construction ───────────────────────────────────────────────────
@@ -77,10 +58,7 @@ def _build_payload(
     temperature: float,
     max_tokens: int,
 ) -> Dict[str, Any]:
-    """Build the shared Gemini generateContent request body.
-
-    Same shape works on both Studio and Vertex endpoints.
-    """
+    """Build the Gemini generateContent request body for Vertex."""
     body: Dict[str, Any] = {
         "contents": [
             {"role": "user", "parts": [{"text": user_prompt}]}
@@ -135,7 +113,7 @@ def _parse_json_loose(text: str) -> Optional[Any]:
         return None
 
 
-# ─── Backend callers ─────────────────────────────────────────────────────────
+# ─── Vertex caller ──────────────────────────────────────────────────────────
 
 
 def _call_vertex(
@@ -160,32 +138,7 @@ def _call_vertex(
         return None
 
 
-def _call_studio(
-    model: str, body: Dict[str, Any], timeout: int
-) -> Optional[Dict[str, Any]]:
-    key = _studio_key()
-    if not key:
-        return None
-    url = _STUDIO_URL.format(model=model) + f"?key={key}"
-    headers = {"Content-Type": "application/json"}
-    try:
-        r = requests.post(url, json=body, headers=headers, timeout=timeout)
-        if r.status_code >= 400:
-            log.info("Gemini Studio %d: %s", r.status_code, r.text[:300])
-            return None
-        return r.json()
-    except Exception as e:
-        log.info("Gemini Studio call failed: %s", e)
-        return None
-
-
-_CALLERS = {"vertex": _call_vertex, "studio": _call_studio}
-
-
-# ─── Public API ──────────────────────────────────────────────────────────────
-
-
-def _usage_from_response(resp: Any) -> tuple[int, int]:
+def _usage_from_response(resp: Any) -> Tuple[int, int]:
     """Pull (input_tokens, output_tokens) from a Gemini response, defensively.
 
     Gemini's `usageMetadata` field carries:
@@ -201,6 +154,9 @@ def _usage_from_response(resp: Any) -> tuple[int, int]:
         return 0, 0
 
 
+# ─── Public API ──────────────────────────────────────────────────────────────
+
+
 def call_llm(
     system_prompt: str,
     user_prompt: str,
@@ -212,22 +168,21 @@ def call_llm(
     timeout: int = _DEFAULT_TIMEOUT,
     job_id: Optional[str] = None,
 ) -> Optional[Any]:
-    """One-shot Gemini call. Tries Vertex then Studio (or vice versa).
+    """One-shot Vertex AI Gemini call.
 
     - `expect_json=True`: requests `responseMimeType=application/json` and
       returns the parsed object (None on parse failure).
     - `expect_json=False`: returns the raw assistant text (None on failure).
 
-    `job_id` (optional, Step 14): when supplied, every call is charged
-    against the cost_meter under that job. Caller is responsible for
-    checking `cost_meter.would_exceed()` BEFORE invoking — this function
-    only records what it spent, it doesn't pre-empt.
+    `job_id` (optional): when supplied OR when the ambient cost-meter
+    ContextVar is set, every call's input/output tokens are charged against
+    the per-job ledger so the cost meter can enforce caps.
 
     Never raises. Callers must treat `None` as "LLM unavailable; use the
     deterministic fallback."
     """
     if not is_available():
-        log.info("No Gemini API key set (GEMINI_API_KEY / VERTEX_AI_API_KEY); LLM call skipped")
+        log.info("VERTEX_AI_API_KEY not set; LLM call skipped (deterministic fallback path)")
         return None
 
     body = _build_payload(
@@ -237,52 +192,45 @@ def call_llm(
         max_tokens=max_tokens,
     )
 
-    last_text: Optional[str] = None
-    for backend in _backend_order():
-        caller = _CALLERS[backend]
-        resp = caller(model, body, timeout)
-        if resp is None:
-            continue
-        # Charge the cost meter regardless of whether parsing succeeds —
-        # tokens cost $ even if we discard the response. The job_id can be
-        # passed explicitly or read from the ambient ContextVar that the
-        # orchestrator set before running the pipeline.
-        try:
-            from .cost_meter import get_meter, current_job_id
-            effective_job_id = job_id or current_job_id()
-            if effective_job_id:
-                in_tok, out_tok = _usage_from_response(resp)
-                get_meter().charge_llm(effective_job_id, model, in_tok, out_tok)
-        except Exception as e:
-            log.debug("cost_meter.charge_llm skipped: %s", e)
-        text = _extract_text(resp)
-        if text is None:
-            log.info("Gemini %s returned empty/unexpected payload", backend)
-            continue
-        last_text = text
-        log.debug("Gemini call served by backend=%s model=%s", backend, model)
-        if not expect_json:
-            return text
-        parsed = _parse_json_loose(text)
-        if parsed is not None:
-            return parsed
-        # JSON parse failed — try next backend in case the model on the
-        # other endpoint behaves better. Don't fail silently across both.
+    resp = _call_vertex(model, body, timeout)
+    if resp is None:
+        return None
 
-    if last_text and expect_json:
-        log.info("All Gemini backends returned text but none parsed as JSON")
-    return None
+    # Charge the cost meter regardless of whether parsing succeeds —
+    # tokens cost $ even if we discard the response. The job_id can be
+    # passed explicitly or read from the ambient ContextVar that the
+    # orchestrator set before running the pipeline.
+    try:
+        from .cost_meter import get_meter, current_job_id
+        effective_job_id = job_id or current_job_id()
+        if effective_job_id:
+            in_tok, out_tok = _usage_from_response(resp)
+            get_meter().charge_llm(effective_job_id, model, in_tok, out_tok)
+    except Exception as e:
+        log.debug("cost_meter.charge_llm skipped: %s", e)
+
+    text = _extract_text(resp)
+    if text is None:
+        log.info("Vertex Gemini returned empty/unexpected payload")
+        return None
+    log.debug("Vertex Gemini call OK model=%s", model)
+
+    if not expect_json:
+        return text
+    parsed = _parse_json_loose(text)
+    if parsed is None and expect_json:
+        log.info("Vertex Gemini returned text but it didn't parse as JSON")
+    return parsed
 
 
 # ─── Diagnostics (used by smoke test) ────────────────────────────────────────
 
 
 def diagnostics() -> Dict[str, Any]:
-    """Snapshot of which keys are present and which backend would be tried first."""
+    """Snapshot of LLM client config — Vertex AI is the only backend."""
     return {
+        "backend": "vertex_ai",
         "vertex_key_set": bool(_vertex_key()),
-        "studio_key_set": bool(_studio_key()),
-        "hypothesis_provider": os.getenv("HYPOTHESIS_PROVIDER", "").strip() or None,
-        "backend_order": _backend_order(),
         "default_model": DEFAULT_MODEL,
+        "endpoint": _VERTEX_URL.format(model=DEFAULT_MODEL),
     }

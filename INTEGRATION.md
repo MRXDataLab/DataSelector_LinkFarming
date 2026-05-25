@@ -89,9 +89,9 @@ legacy code after a week of dual-running.
 ### 2.4 LLM dispatch — `services/llm_client.py` vs in-module `_llm.py`
 
 The module ships its own minimal Gemini shim ([`link_extraction/_llm.py`](link_extraction/_llm.py))
-because the host's `services/llm_client.py` is OpenRouter-based, and a
-locked feedback note ([`feedback_llm_provider.md`](../.claude/projects/-Users-vdogg-Documents-mrxdatalabs-Station-MRX-DataSelector/memory/feedback_llm_provider.md))
-says **this module uses Gemini natively, never OpenRouter**.
+that calls **GCP Vertex AI ONLY** — no AI Studio fallback, no OpenRouter,
+no other providers. This is a hard requirement (see locked feedback note
+[`feedback_llm_provider.md`](../.claude/projects/-Users-vdogg-Documents-mrxdatalabs-Station-MRX-DataSelector/memory/feedback_llm_provider.md)).
 
 Three options at integration time:
 
@@ -211,9 +211,9 @@ Verify:
 |---|---|---|
 | `YOUTUBE_API_KEY` | Yes (Step 6) | new — owned by this module |
 | `BRAVE_API_KEY` | Yes (Step 1) | already present |
-| `GEMINI_API_KEY` | Yes (Step 5+7) | already present |
-| `VERTEX_AI_API_KEY` | Yes (Step 5+7) | already present |
-| `HYPOTHESIS_PROVIDER` | `gcp_gemini` | already present |
+| `VERTEX_AI_API_KEY` | **Yes** (Step 5+7) | **REQUIRED** — the only LLM backend this module uses. |
+| `GEMINI_API_KEY` | No (host-only) | The module does NOT read this. AI Studio is not in our LLM path. |
+| `HYPOTHESIS_PROVIDER` | `gcp_gemini` | already present; informational only for this module |
 | `REDDIT_CLIENT_ID` / `_SECRET` | Optional — enables PRAW rich mode for Reddit discoverer | new |
 | `OUTTLYR_COST_CAP_USD` | Default `0.50` | new — Step 14 cost meter cap |
 | `OUTTLYR_MEMORY_DIR` | Default `<repo>/.memory` | new — Step 14 snapshot location |

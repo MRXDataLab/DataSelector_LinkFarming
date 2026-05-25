@@ -137,9 +137,8 @@ Env vars are loaded from either `MRX_DataSelector/.env` (preferred) or the host 
 | `HEADLESS_CAPTCHA_COOLDOWN_SEC` | `30` | backend self-disable window on CAPTCHA hit |
 | `YOUTUBE_API_KEY` | — | wired in Step 6 (YT Shorts) |
 | `REDDIT_CLIENT_ID` / `_SECRET` / `_USER_AGENT` | — | wired in Step 10 (Reddit) |
-| `VERTEX_AI_API_KEY` | — | Gemini on Vertex AI (primary when `HYPOTHESIS_PROVIDER=gcp_gemini`) — used by `_llm.py` |
-| `GEMINI_API_KEY` | — | Gemini in Google AI Studio (fallback path) — used by `_llm.py` |
-| `HYPOTHESIS_PROVIDER` | — | set to `gcp_gemini` to prefer Vertex; otherwise Studio first |
+| `VERTEX_AI_API_KEY` | — | **REQUIRED** for L2 synth + L6 triage. The module's `_llm.py` is Vertex-only — no AI Studio fallback, no OpenRouter. |
+| `HYPOTHESIS_PROVIDER` | `gcp_gemini` | informational; the LLM dispatch is hard-coded to Vertex regardless |
 
 ---
 

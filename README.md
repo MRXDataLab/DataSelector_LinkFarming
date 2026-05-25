@@ -22,7 +22,8 @@ cd DataSelector_LinkFarming
 # 1. Set up env (point at the host repo's venv if you have one nearby,
 #    or build a fresh one with the deps in INTEGRATION.md)
 cp .env.example .env
-# fill in BRAVE_API_KEY, GEMINI_API_KEY (or VERTEX_AI_API_KEY), YOUTUBE_API_KEY
+# fill in BRAVE_API_KEY, VERTEX_AI_API_KEY, YOUTUBE_API_KEY
+# (the module is Vertex-only — AI Studio key is NOT used)
 
 # 2. Run the smoke test against the full pipeline
 python -m link_extraction._smoke_test
