@@ -1,21 +1,28 @@
-"""Headless Chromium scrape of Google — FINAL FALLBACK plus the only path for
-PAA and Related Searches (neither Brave nor DDG expose them).
+"""Headless Chromium scrape of Google — PRIORITY #1 by default (Change #2).
 
-Concurrency:
-  - Global asyncio.Semaphore (env HEADLESS_CONCURRENCY, default 3) shared
-    across all callers so PAA + TikTok + Quora don't oversaturate the same IP.
+Tuned for low-CAPTCHA-rate operation. The "Google Free" backend label in
+the UI is this module. The bundle of CAPTCHA-avoidance tactics:
 
-CAPTCHA handling:
-  - On detection, backend enters cooldown for HEADLESS_CAPTCHA_COOLDOWN_SEC
-    (default 30) and short-circuits to [] for the duration. Caller falls
-    back to whatever's left.
+  1. **playwright-stealth** — masks `navigator.webdriver`, languages,
+     plugins, WebGL/Canvas fingerprints. Applied to every new page.
+  2. **Persistent browser context** — one Chromium instance + one context
+     alive across queries, so cookies/session look like a single human's
+     browsing session, not fresh-incognito-per-query.
+  3. **Per-host request pacing** — minimum 2s between Google hits + 1-3s
+     random jitter on top. Prevents the burst pattern that flags bots.
+  4. **Concurrency 1 by default** — only one Google scrape in flight at
+     any moment. (`HEADLESS_CONCURRENCY` env var, was 3.)
+  5. **5-minute CAPTCHA cooldown** — was 30s; that wasn't enough, Google
+     remembers IPs for hours. 5 min is a softer signal that lets the
+     server move past short-burst flags. (`HEADLESS_CAPTCHA_COOLDOWN_SEC`.)
+  6. **UA + viewport rotation** — 4 user agents × 3 viewports (laptop /
+     desktop / portrait tablet).
+  7. **Realistic wait timings** — 4-7 sec after navigation to mimic human
+     reading time before any scraping happens.
 
-Lifted from services/link_farming.py:241-335 (host's existing scraper) with:
-  - Typed RawResult return instead of dict
-  - Global semaphore for concurrency cap
-  - Cooldown state machine
-  - PAA + Related as first-class verticals
-  - Time-window translation via temporal.to_google_tbs
+When CAPTCHA does fire, the global cooldown clock prevents further calls
+for 5 min, and `search()` returns [] so the registry's fallback chain
+escalates to Brave / DDG immediately.
 """
 from __future__ import annotations
 
@@ -24,8 +31,8 @@ import logging
 import os
 import random
 import time
-from typing import List, Optional
-from urllib.parse import quote_plus
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote_plus, urlparse
 
 from ..models import QueryVertical, RawResult, TimeWindow
 from ..temporal import to_google_tbs
@@ -44,20 +51,46 @@ USER_AGENTS: list[str] = [
     "(KHTML, like Gecko) Version/17.5 Safari/605.1.15",
 ]
 
+# 3 viewport sizes — laptop / desktop / tablet portrait. Real distribution
+# is mostly desktop; we weight accordingly via the choice of indices.
+VIEWPORTS = [
+    {"width": 1366, "height": 768},   # laptop (most common)
+    {"width": 1920, "height": 1080},  # desktop
+    {"width": 1440, "height": 900},   # macbook-ish
+]
+
 VERTICAL_TBM: dict[str, str] = {
     "videos": "&tbm=vid",
-    "news": "&tbm=nws",
+    "news":   "&tbm=nws",
     "shopping": "&tbm=shop",
 }
 
+# Per-host pacing: minimum gap (sec) between two requests to the same host.
+_HOST_MIN_GAP_SEC = 2.0
+# Extra random jitter on top of the minimum gap.
+_HOST_GAP_JITTER_MIN = 0.5
+_HOST_GAP_JITTER_MAX = 2.5
+# Human-like dwell time after page load before scraping starts.
+_DWELL_MIN_MS = 4000
+_DWELL_MAX_MS = 7000
+
 
 class HeadlessGoogleBackend(SearchBackend):
-    """Singleton — one global semaphore and one cooldown clock per process."""
+    """Singleton — one browser, one cooldown clock, one per-host pacing table."""
 
     id = "headless_google"
     _instance: Optional["HeadlessGoogleBackend"] = None
     _semaphore: Optional[asyncio.Semaphore] = None
     _captcha_until: float = 0.0
+    # Persistent browser state (created lazily on first use, never closed
+    # explicitly — process exit handles cleanup)
+    _pw_obj: Any = None
+    _browser: Any = None
+    _context: Any = None
+    _ctx_lock: Optional[asyncio.Lock] = None
+    # Per-host last-request-time tracker (monotonic seconds)
+    _host_last_req: Dict[str, float] = {}
+    _host_pace_lock: Optional[asyncio.Lock] = None
 
     def __new__(cls) -> "HeadlessGoogleBackend":
         if cls._instance is None:
@@ -65,19 +98,22 @@ class HeadlessGoogleBackend(SearchBackend):
         return cls._instance
 
     def __init__(self) -> None:
-        # __init__ runs on every call; guard re-init
         if getattr(self, "_initialised", False):
             return
         self._initialised = True
 
-        self.concurrency = int(os.getenv("HEADLESS_CONCURRENCY", "3"))
-        self.cooldown_sec = int(os.getenv("HEADLESS_CAPTCHA_COOLDOWN_SEC", "30"))
+        # Defaults aligned with Change #2 anti-CAPTCHA stance.
+        self.concurrency = int(os.getenv("HEADLESS_CONCURRENCY", "1"))
+        self.cooldown_sec = int(os.getenv("HEADLESS_CAPTCHA_COOLDOWN_SEC", "300"))
         if HeadlessGoogleBackend._semaphore is None:
             HeadlessGoogleBackend._semaphore = asyncio.Semaphore(self.concurrency)
+        if HeadlessGoogleBackend._ctx_lock is None:
+            HeadlessGoogleBackend._ctx_lock = asyncio.Lock()
+        if HeadlessGoogleBackend._host_pace_lock is None:
+            HeadlessGoogleBackend._host_pace_lock = asyncio.Lock()
 
         try:
             import playwright  # noqa: F401
-
             self.available = True
         except ImportError:
             log.info(
@@ -97,6 +133,110 @@ class HeadlessGoogleBackend(SearchBackend):
             "Headless Google entered CAPTCHA cooldown for %ds", self.cooldown_sec
         )
 
+    # ── Per-host pacing ─────────────────────────────────────────────────────
+
+    async def _wait_for_host_slot(self, host: str) -> None:
+        """Enforce minimum + jittered gap between requests to the same host."""
+        assert HeadlessGoogleBackend._host_pace_lock is not None
+        async with HeadlessGoogleBackend._host_pace_lock:
+            now = time.monotonic()
+            last = HeadlessGoogleBackend._host_last_req.get(host, 0.0)
+            elapsed = now - last
+            needed = _HOST_MIN_GAP_SEC + random.uniform(
+                _HOST_GAP_JITTER_MIN, _HOST_GAP_JITTER_MAX,
+            )
+            sleep_for = needed - elapsed
+            # Reserve the slot now so concurrent callers compute against an
+            # updated timestamp (they'll sleep their own full gap).
+            HeadlessGoogleBackend._host_last_req[host] = now + max(0.0, sleep_for)
+        if sleep_for > 0:
+            log.debug("host pacing: sleeping %.2fs before next %s request", sleep_for, host)
+            await asyncio.sleep(sleep_for)
+
+    # ── Persistent browser + context ────────────────────────────────────────
+
+    async def _get_context(self) -> Any:
+        """Lazy-init the persistent context. Recreates on failure."""
+        if HeadlessGoogleBackend._context is not None:
+            return HeadlessGoogleBackend._context
+
+        assert HeadlessGoogleBackend._ctx_lock is not None
+        async with HeadlessGoogleBackend._ctx_lock:
+            if HeadlessGoogleBackend._context is not None:
+                return HeadlessGoogleBackend._context
+            await self._build_context()
+            return HeadlessGoogleBackend._context
+
+    async def _build_context(self) -> None:
+        """Spin up playwright + Chromium + a fresh context with stealth."""
+        from playwright.async_api import async_playwright
+
+        cls = HeadlessGoogleBackend
+        cls._pw_obj = await async_playwright().start()
+        cls._browser = await cls._pw_obj.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                # Stealth flags — match real Chrome's default flags as
+                # closely as headful Chrome would emit.
+                "--disable-gpu",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ],
+        )
+        cls._context = await cls._browser.new_context(
+            user_agent=random.choice(USER_AGENTS),
+            viewport=random.choice(VIEWPORTS),
+            locale="en-US",
+            timezone_id="America/New_York",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            color_scheme="light",
+        )
+        # Stealth — patches `navigator.webdriver`, plugins, language list,
+        # `chrome` object, WebGL vendor/renderer, etc. Applied to the
+        # CONTEXT so every new page inherits the patches.
+        try:
+            from playwright_stealth import Stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(cls._context)
+            log.info("playwright-stealth applied to Chromium context")
+        except ImportError:
+            log.info("playwright-stealth not installed — manual init script only")
+            # Manual minimal stealth fallback
+            await cls._context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                "window.chrome = {runtime: {}};"
+                "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});"
+                "Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});"
+            )
+        except Exception as e:
+            log.warning("stealth.apply_stealth_async failed: %s", e)
+
+    async def _reset_context(self) -> None:
+        """Drop persistent state — next call rebuilds. Use after errors."""
+        cls = HeadlessGoogleBackend
+        try:
+            if cls._context is not None:
+                await cls._context.close()
+        except Exception:
+            pass
+        try:
+            if cls._browser is not None:
+                await cls._browser.close()
+        except Exception:
+            pass
+        try:
+            if cls._pw_obj is not None:
+                await cls._pw_obj.stop()
+        except Exception:
+            pass
+        cls._context = None
+        cls._browser = None
+        cls._pw_obj = None
+
     # ── public ─────────────────────────────────────────────────────────────
 
     async def search(
@@ -114,7 +254,13 @@ class HeadlessGoogleBackend(SearchBackend):
 
         assert HeadlessGoogleBackend._semaphore is not None
         async with HeadlessGoogleBackend._semaphore:
-            return await self._search_inner(query, vertical, count, window)
+            await self._wait_for_host_slot("google.com")
+            try:
+                return await self._search_inner(query, vertical, count, window)
+            except Exception as e:
+                log.warning("Headless _search_inner crashed, resetting ctx: %s", e)
+                await self._reset_context()
+                return []
 
     # ── private ────────────────────────────────────────────────────────────
 
@@ -125,8 +271,6 @@ class HeadlessGoogleBackend(SearchBackend):
         count: int,
         window: Optional[TimeWindow],
     ) -> List[RawResult]:
-        from playwright.async_api import async_playwright
-
         tbs = to_google_tbs(window) if window else None
         params = f"?q={quote_plus(query)}&num={count}&hl=en"
         params += VERTICAL_TBM.get(vertical, "")
@@ -134,62 +278,59 @@ class HeadlessGoogleBackend(SearchBackend):
             params += f"&tbs={quote_plus(tbs)}"
         url = "https://www.google.com/search" + params
 
+        ctx = await self._get_context()
+        page = await ctx.new_page()
         results: List[RawResult] = []
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                    ],
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            except Exception as e:
+                log.warning("Headless goto failed: %s", e)
+                return []
+
+            # Human-like dwell time — longer for PAA which needs box expansion
+            paa_like = vertical in ("paa", "related")
+            dwell = (
+                random.randint(_DWELL_MIN_MS + 1500, _DWELL_MAX_MS + 1500)
+                if paa_like
+                else random.randint(_DWELL_MIN_MS, _DWELL_MAX_MS)
+            )
+            await page.wait_for_timeout(dwell)
+
+            # Mouse movement noise — makes the session look more human.
+            try:
+                await page.mouse.move(
+                    random.randint(100, 800), random.randint(100, 600),
                 )
-                ctx = await browser.new_context(
-                    user_agent=random.choice(USER_AGENTS),
-                    viewport={"width": 1366, "height": 768},
-                    locale="en-US",
-                    timezone_id="America/New_York",
+                await page.mouse.move(
+                    random.randint(100, 800), random.randint(100, 600),
+                    steps=random.randint(5, 15),
                 )
-                page = await ctx.new_page()
-                await page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => false});"
-                )
+            except Exception:
+                pass
 
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                except Exception as e:
-                    log.warning("Headless goto failed: %s", e)
-                    await browser.close()
-                    return []
+            content = await page.content()
+            if (
+                "captcha" in content.lower()
+                or "unusual traffic" in content.lower()
+                or "/sorry/" in (page.url or "")
+            ):
+                self._enter_cooldown()
+                return []
 
-                # anti-bot jitter — PAA gets a longer pause
-                paa_like = vertical in ("paa", "related")
-                await page.wait_for_timeout(
-                    random.randint(3000, 5000) if paa_like else random.randint(2000, 4000)
-                )
-
-                content = await page.content()
-                if (
-                    "captcha" in content.lower()
-                    or "unusual traffic" in content.lower()
-                ):
-                    self._enter_cooldown()
-                    await browser.close()
-                    return []
-
-                if vertical == "paa":
-                    results = await self._extract_paa(page, count)
-                elif vertical == "related":
-                    results = await self._extract_related(page, count)
-                else:
-                    results = await self._extract_organic(page, vertical, count)
-                    if vertical == "web":
-                        results += await self._extract_paa(page, 6)
-
-                await browser.close()
-        except Exception as e:
-            log.warning("Headless Google failed for %r: %s", query[:60], e)
+            if vertical == "paa":
+                results = await self._extract_paa(page, count)
+            elif vertical == "related":
+                results = await self._extract_related(page, count)
+            else:
+                results = await self._extract_organic(page, vertical, count)
+                if vertical == "web":
+                    results += await self._extract_paa(page, 6)
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
 
         return results
 
@@ -251,7 +392,6 @@ class HeadlessGoogleBackend(SearchBackend):
 
     async def _extract_related(self, page, count: int) -> List[RawResult]:
         out: List[RawResult] = []
-        # Related Searches sidebar — selectors vary across Google A/B variants
         nodes = await page.query_selector_all(
             "a.k8XOCe, p.nVcaUb, div.AJLUJb a"
         )
