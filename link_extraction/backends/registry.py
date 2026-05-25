@@ -1,19 +1,26 @@
-"""Backend registry + Brave → DDG → Headless fallback chain.
+"""Backend registry + fallback chain.
 
-The single public function `search_with_fallback()` is what discoverers will
-call. Verticals that only Google exposes (`paa`, `related`) bypass tiers 1-2
-and go straight to headless.
+Per-job priority order is determined by the ambient `BackendPreferences`
+(set by the orchestrator before the pipeline runs). Default order is
+**Google → Brave → DuckDuckGo** so the free-tier scrape gets first crack;
+users can flip individual backends off via the demo UI, in which case
+disabled backends are skipped entirely.
+
+Verticals only Google exposes (`paa`, `related`) go straight to headless
+even when Google is disabled in prefs — the discoverer is responsible
+for handling that case (will simply return [] when Google is off).
 """
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..models import QueryVertical, RawResult, TimeWindow
 from .base import SearchBackend
 from .brave import BraveBackend
 from .duckduckgo import DuckDuckGoBackend
 from .headless_google import HeadlessGoogleBackend
+from .preferences import current_preferences
 from .serpapi_stub import SerpApiStubBackend
 
 log = logging.getLogger(__name__)
@@ -60,6 +67,13 @@ def get_serpapi() -> SerpApiStubBackend:
 # ── Fallback chain ──────────────────────────────────────────────────────────
 
 
+_BACKEND_GETTERS: Dict[str, callable] = {
+    "headless_google": get_headless,
+    "brave":           get_brave,
+    "duckduckgo":      get_ddg,
+}
+
+
 async def search_with_fallback(
     query: str,
     vertical: QueryVertical = "web",
@@ -67,17 +81,27 @@ async def search_with_fallback(
     window: Optional[TimeWindow] = None,
     min_results: int = 3,
 ) -> List[RawResult]:
-    """Run Brave → DDG → Headless until at least `min_results` are accumulated.
+    """Run enabled backends in the user's priority order until `min_results`
+    are accumulated.
 
-    Results across tiers are merged (deduplicated by URL) so partial returns
-    from Brave + DDG can combine to clear the threshold without escalating to
-    headless.
+    Honours the ambient `BackendPreferences` ContextVar (set by the
+    orchestrator). Default = Google → Brave → DDG. Disabled backends are
+    skipped entirely.
 
-    PAA/Related verticals go straight to headless — neither Brave nor DDG
-    expose those surfaces.
+    Results across tiers are merged (deduplicated by URL) so partial
+    returns from multiple backends can combine to clear the threshold.
+
+    PAA/Related verticals: only Google exposes them. We try headless if
+    it's in the enabled set, otherwise return [] — no alternative source.
     """
+    prefs = current_preferences()
+    enabled_ids = prefs.backend_ids_in_order  # in user-specified priority order
+
     if vertical in HEADLESS_ONLY:
-        return await get_headless().search(query, vertical, count, window)
+        if "headless_google" in enabled_ids:
+            return await get_headless().search(query, vertical, count, window)
+        log.info("PAA/related requested but google_free is disabled — returning []")
+        return []
 
     accumulated: list[RawResult] = []
     seen_urls: set[str] = set()
@@ -97,15 +121,16 @@ async def search_with_fallback(
             accumulated.append(r)
         return len(accumulated) >= min_results
 
-    if await _try(get_brave()):
-        return accumulated
-    if await _try(get_ddg()):
-        return accumulated
-    if await _try(get_headless()):
-        return accumulated
+    for backend_id in enabled_ids:
+        getter = _BACKEND_GETTERS.get(backend_id)
+        if getter is None:
+            continue
+        if await _try(getter()):
+            return accumulated
 
     log.debug(
-        "Fallback chain exhausted: %s → %d results for %r [%s]",
+        "Backend chain exhausted [%s]: %s → %d results for %r [%s]",
+        ",".join(enabled_ids) or "(none enabled)",
         " → ".join(backends_used) or "(no backend available)",
         len(accumulated),
         query[:50],

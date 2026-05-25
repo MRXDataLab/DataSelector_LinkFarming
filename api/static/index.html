@@ -479,6 +479,43 @@
   .cost-pill .v { color: var(--teal); font-weight: 600; }
   .cost-pill.over { color: var(--refutes); border-color: var(--refutes); }
   .cost-pill.over .v { color: var(--refutes); }
+
+  /* Change #1 — backend toggles */
+  .backend-toggles {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    margin-top: 4px;
+  }
+  .backend-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-dim);
+    user-select: none;
+    transition: all 0.15s;
+  }
+  .backend-toggle input { display: none; }
+  .backend-toggle:hover { border-color: var(--teal-dim); }
+  .backend-toggle.on {
+    background: rgba(20, 184, 166, 0.1);
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+  .backend-toggle .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-faint);
+    transition: background 0.15s;
+  }
+  .backend-toggle.on .dot { background: var(--teal); }
+  .backend-toggle .pri {
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .backend-toggle.on .pri { color: var(--teal); }
 </style>
 </head>
 <body>
@@ -630,6 +667,34 @@
           <input type="checkbox" id="use_llm" checked style="width: auto;" />
           <span>Use LLM (Gemini) for slot-fill + verdicts</span>
         </label>
+      </div>
+    </div>
+
+    <div style="margin-top: 10px;">
+      <label>Search backends (priority order, top → bottom)</label>
+      <div class="backend-toggles" id="backend-toggles">
+        <label class="backend-toggle on" data-backend="google_free">
+          <input type="checkbox" checked />
+          <span class="dot"></span>
+          <span>Google (free)</span>
+          <span class="pri">#1</span>
+        </label>
+        <label class="backend-toggle on" data-backend="brave">
+          <input type="checkbox" checked />
+          <span class="dot"></span>
+          <span>Brave</span>
+          <span class="pri">#2</span>
+        </label>
+        <label class="backend-toggle on" data-backend="duckduckgo">
+          <input type="checkbox" checked />
+          <span class="dot"></span>
+          <span>DuckDuckGo</span>
+          <span class="pri">#3</span>
+        </label>
+      </div>
+      <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
+        Affects channels that route through web search (Reddit fallback, Quora, News, Substack, Marketplace, TikTok, Google PAA).
+        YouTube + Trends use their own APIs and ignore this.
       </div>
     </div>
 
@@ -818,6 +883,7 @@ $("start").addEventListener("click", async () => {
         use_llm: $("use_llm").checked,
         max_triage: parseInt($("max_triage").value) || 30,
         triage_strictness: $("triage_strictness").value,
+        backends: getEnabledBackends(),
       }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -1029,6 +1095,33 @@ function cardForLink(link) {
     </div>
   `;
   return card;
+}
+
+// ── BACKEND TOGGLES (Change #1) ──────────────────────────────────────────
+// Three on/off toggles for the search backends. Priority order is fixed in
+// the markup (Google → Brave → DDG) — clicking just toggles enabled state.
+document.querySelectorAll(".backend-toggle").forEach(el => {
+  const cb = el.querySelector("input");
+  cb.addEventListener("change", () => {
+    el.classList.toggle("on", cb.checked);
+  });
+});
+function getEnabledBackends() {
+  const out = [];
+  document.querySelectorAll(".backend-toggle").forEach(el => {
+    const cb = el.querySelector("input");
+    if (cb.checked) out.push(el.dataset.backend);
+  });
+  if (out.length === 0) {
+    // UI safety net — re-enable Google so the request doesn't 400
+    const first = document.querySelector(".backend-toggle");
+    if (first) {
+      first.querySelector("input").checked = true;
+      first.classList.add("on");
+      return [first.dataset.backend];
+    }
+  }
+  return out;
 }
 
 // ── PAST RUNS (Step 14 — memory store) ───────────────────────────────────

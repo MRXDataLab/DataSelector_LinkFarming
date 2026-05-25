@@ -168,6 +168,7 @@ def create_job(
     use_llm: bool = True,
     max_triage: int = 30,
     triage_strictness: str = "liberal",
+    backend_preferences: Optional[Any] = None,
 ) -> str:
     """Register a new job and kick off the pipeline as a background task.
 
@@ -196,6 +197,7 @@ def create_job(
             use_llm=use_llm,
             max_triage=max_triage,
             triage_strictness=triage_strictness,
+            backend_preferences=backend_preferences,
         ),
         name=f"pipeline-{job_id}",
     )
@@ -209,6 +211,7 @@ async def _run_job(
     use_llm: bool,
     max_triage: int,
     triage_strictness: str = "liberal",
+    backend_preferences: Optional[Any] = None,
 ) -> None:
     """Background task body — drives one PipelineResult to completion."""
     state.status = "running"
@@ -227,6 +230,7 @@ async def _run_job(
             max_triage=max_triage,
             job_id=state.job_id,
             triage_strictness=triage_strictness,
+            backend_preferences=backend_preferences,
         )
         state.result = result
         if result.error:

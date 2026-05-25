@@ -35,6 +35,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
+from .backends.preferences import (
+    BackendPreferences,
+    DEFAULT_PREFERENCES,
+    reset_current_preferences,
+    set_current_preferences,
+)
 from .cost_meter import (
     current_job_id as _current_job_id,
     default_cost_cap_usd,
@@ -237,6 +243,7 @@ async def run_pipeline(
     job_id: Optional[str] = None,
     cost_cap_usd: Optional[float] = None,
     triage_strictness: TriageStrictness = DEFAULT_STRICTNESS,
+    backend_preferences: Optional[BackendPreferences] = None,
 ) -> PipelineResult:
     """Run L0–L7 for one hypothesis and emit progress events.
 
@@ -263,6 +270,11 @@ async def run_pipeline(
     effective_cap = cost_cap_usd if cost_cap_usd is not None else default_cost_cap_usd()
     get_meter().set_cap(meter_job_id, effective_cap)
 
+    # Step #1 (this change): bind backend preferences for this pipeline run.
+    # search_with_fallback() reads them via ContextVar.
+    effective_prefs = backend_preferences or DEFAULT_PREFERENCES
+    prefs_token = set_current_preferences(effective_prefs)
+
     emit(PipelineEvent(
         kind="pipeline_start",
         hypothesis_id=hyp_id,
@@ -274,6 +286,7 @@ async def run_pipeline(
             "meter_job_id": meter_job_id,
             "triage_strictness": triage_strictness,
             "max_triage": max_triage,
+            "backend_preferences": effective_prefs.to_dict(),
         },
     ))
 
@@ -466,4 +479,5 @@ async def run_pipeline(
         },
     ))
     reset_current_job(cv_token)
+    reset_current_preferences(prefs_token)
     return result

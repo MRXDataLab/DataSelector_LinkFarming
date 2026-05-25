@@ -110,6 +110,10 @@ from link_extraction import (  # noqa: E402
     list_jobs,
     subscribe,
 )
+from link_extraction.backends.preferences import (  # noqa: E402
+    ALL_BACKENDS,
+    BackendPreferences,
+)
 from link_extraction.memory_store import get_store  # noqa: E402
 from link_extraction.job_runner import _jobs as _live_jobs  # noqa: E402
 from link_extraction.batch_runner import _batches as _live_batches  # noqa: E402
@@ -175,6 +179,13 @@ class StartRequest(BaseModel):
         description="How aggressive the LLM is about calling supports/refutes "
                     "vs tangential. 'liberal' = lean toward decisive verdicts; "
                     "'strict' = original conservative behaviour.",
+    )
+    backends: Optional[List[str]] = Field(
+        None,
+        description="Search backends to enable, in priority order. Subset of "
+                    "['google_free', 'brave', 'duckduckgo']. Default = all "
+                    "enabled, google_free first. Channels that use official "
+                    "APIs (youtube_shorts, youtube, trends) are unaffected.",
     )
 
 
@@ -390,12 +401,21 @@ async def start_job(req: StartRequest) -> StartResponse:
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    prefs = None
+    if req.backends is not None:
+        # Sanitise: only known backend ids, preserve user's order.
+        clean = [b for b in req.backends if b in ALL_BACKENDS]
+        if not clean:
+            raise HTTPException(400, "At least one backend must be enabled.")
+        prefs = BackendPreferences(enabled=clean)
+
     job_id = create_job(
         req.hypothesis,
         window,
         use_llm=req.use_llm,
         max_triage=req.max_triage,
         triage_strictness=req.triage_strictness,
+        backend_preferences=prefs,
     )
     state = get_job(job_id)
     assert state is not None
