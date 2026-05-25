@@ -90,7 +90,16 @@ class BraveBackend(SearchBackend):
                 return self._videos(query, count, headers)
             return self._web(query, vertical, count, freshness, headers)
         except requests.HTTPError as e:
-            log.warning("Brave %s HTTP %s for %r", vertical, e.response.status_code, query[:60])
+            code = e.response.status_code
+            # 402 Payment Required = free-tier monthly quota exhausted.
+            # 429 = rate limit. Surface these distinctly so the operator
+            # knows it's a quota / billing issue, not a query problem.
+            hint = ""
+            if code == 402:
+                hint = " — Brave free-tier MONTHLY quota exhausted; upgrade plan or switch backend"
+            elif code == 429:
+                hint = " — Brave rate-limited; slow request rate"
+            log.warning("Brave %s HTTP %s for %r%s", vertical, code, query[:60], hint)
             return []
         except Exception as e:
             log.warning("Brave %s failed for %r: %s", vertical, query[:60], e)

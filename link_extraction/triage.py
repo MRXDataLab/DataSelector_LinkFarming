@@ -448,17 +448,74 @@ def _llm_verdict_batch(
 # ─── Pre-ranking ─────────────────────────────────────────────────────────────
 
 
-def _pre_rank_score(link: DiscoveredLink) -> float:
-    """Order candidates BEFORE expensive triage work.
+def _within_channel_score(link: DiscoveredLink) -> float:
+    """Order links *within a single channel* before they enter the round-robin.
 
-    Short-video: engagement_score (None → 0.0).
-    Other: 0.0 (preserve original order). The orchestrator will pre-sort
-    per-channel discoveries; this just keeps short-video richness on top
-    of the triage budget.
+    - Short-video: by engagement_score (None → 0.0).
+    - Everything else: by discovery order (so the FIFO from the backend
+      response is preserved). Returns 0.0 here, and we rely on Python's
+      stable sort to keep insertion order.
     """
     if isinstance(link, ShortVideoLink):
         return link.engagement_score or 0.0
     return 0.0
+
+
+def _channel_balanced_cut(
+    links: Sequence[DiscoveredLink], max_triage: int,
+) -> List[DiscoveredLink]:
+    """Pick top `max_triage` links via channel-balanced round-robin.
+
+    Why: the old pure-engagement sort buried text channels (Reddit, Quora,
+    News, Marketplace, etc.) because only ShortVideoLink has engagement_score.
+    With 60 candidates split 32 YT Shorts / 21 Reddit / 7 YT long-form and
+    a budget of 30, the pure sort would take ~30 YT links and drop EVERY
+    Reddit thread. The triage CSV would be YT-only.
+
+    The round-robin algorithm:
+      1. Group links by channel
+      2. Sort each group internally by `_within_channel_score` (engagement
+         for shorts, FIFO for text)
+      3. Rotate across channels — take 1 link from each in turn — until
+         we've collected `max_triage` items or all groups are empty
+
+    Result: diverse channel coverage in the triage cut. Channels with
+    fewer links empty out earlier and the remaining slots go to richer
+    channels, but no channel is shut out entirely.
+    """
+    if not links:
+        return []
+
+    by_channel: Dict[str, List[DiscoveredLink]] = {}
+    for lk in links:
+        by_channel.setdefault(lk.channel, []).append(lk)
+
+    # Sort within each channel by best-signal (descending)
+    for ch in by_channel:
+        by_channel[ch].sort(key=_within_channel_score, reverse=True)
+
+    # Round-robin pop. Channels are visited in their first-seen order
+    # from `links` (stable). Within each channel, best link first.
+    out: List[DiscoveredLink] = []
+    queues = {ch: list(group) for ch, group in by_channel.items()}
+    while len(out) < max_triage:
+        progress = False
+        for ch in list(queues.keys()):
+            if not queues[ch]:
+                continue
+            out.append(queues[ch].pop(0))
+            progress = True
+            if len(out) >= max_triage:
+                break
+        if not progress:
+            break  # every channel exhausted
+
+    return out
+
+
+# Kept for backward compat with any external callers
+def _pre_rank_score(link: DiscoveredLink) -> float:
+    return _within_channel_score(link)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -485,8 +542,9 @@ async def triage(
         return []
     ctx = build_context(hypothesis, decomp)
 
-    # Pre-rank, cap to max_triage
-    capped = sorted(links, key=_pre_rank_score, reverse=True)[:max_triage]
+    # Channel-balanced round-robin cut — see `_channel_balanced_cut` docstring
+    # for why this replaces the old pure-engagement sort.
+    capped = _channel_balanced_cut(links, max_triage)
 
     # Extract evidence text per link (off the event loop for body fetches)
     evidence: List[Tuple[int, DiscoveredLink, str, float, float, List[str]]] = []
