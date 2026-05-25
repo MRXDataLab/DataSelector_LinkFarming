@@ -281,7 +281,7 @@ def _hit_rate(text: str, regex: Optional[Pattern]) -> Tuple[float, List[str]]:
 
 def _deterministic_verdict(
     text: str, sig_rate: float, ctr_rate: float,
-    strictness: TriageStrictness = DEFAULT_STRICTNESS,
+    strictness: str = "liberal",   # value-equal to DEFAULT_STRICTNESS, kept inline to avoid forward-ref
 ) -> Tuple[Verdict, float]:
     """Rule-based fallback when the LLM is unavailable.
 
