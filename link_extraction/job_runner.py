@@ -167,6 +167,7 @@ def create_job(
     registry: Optional[DiscovererRegistry] = None,
     use_llm: bool = True,
     max_triage: int = 30,
+    triage_strictness: str = "liberal",
 ) -> str:
     """Register a new job and kick off the pipeline as a background task.
 
@@ -194,6 +195,7 @@ def create_job(
             registry=registry,
             use_llm=use_llm,
             max_triage=max_triage,
+            triage_strictness=triage_strictness,
         ),
         name=f"pipeline-{job_id}",
     )
@@ -206,6 +208,7 @@ async def _run_job(
     registry: Optional[DiscovererRegistry],
     use_llm: bool,
     max_triage: int,
+    triage_strictness: str = "liberal",
 ) -> None:
     """Background task body — drives one PipelineResult to completion."""
     state.status = "running"
@@ -223,6 +226,7 @@ async def _run_job(
             use_llm=use_llm,
             max_triage=max_triage,
             job_id=state.job_id,
+            triage_strictness=triage_strictness,
         )
         state.result = result
         if result.error:

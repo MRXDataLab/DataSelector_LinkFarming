@@ -22,7 +22,12 @@ GET  /api/data-selection/jobs/{job_id}/results
     ?download=1  → sets Content-Disposition: attachment for browser save
 
 GET  /api/data-selection/jobs/{job_id}/results.csv
-    → flat 28-column CSV (UTF-8 with BOM); one row per triaged link.
+    → flat 29-column CSV (UTF-8 with BOM); one row per triaged link.
+    ?wait=true   → blocks until the job is done
+
+GET  /api/data-selection/jobs/{job_id}/discovered.csv
+    → flat CSV of EVERY discovered link (not just the triaged top-N).
+    Same 29-column schema; below-cut links have empty verdict cells.
     ?wait=true   → blocks until the job is done
 
 POST /api/data-selection/batch/preview
@@ -67,7 +72,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -164,7 +169,13 @@ class StartRequest(BaseModel):
     )
     window_label: WindowLabel = Field("1y", description="TimeWindow preset")
     use_llm: bool = Field(True, description="Toggle Gemini slot-fill + triage verdict")
-    max_triage: int = Field(10, ge=1, le=30, description="Top-N triage budget")
+    max_triage: int = Field(30, ge=1, le=100, description="Top-N triage budget")
+    triage_strictness: Literal["strict", "balanced", "liberal"] = Field(
+        "liberal",
+        description="How aggressive the LLM is about calling supports/refutes "
+                    "vs tangential. 'liberal' = lean toward decisive verdicts; "
+                    "'strict' = original conservative behaviour.",
+    )
 
 
 class StartResponse(BaseModel):
@@ -384,6 +395,7 @@ async def start_job(req: StartRequest) -> StartResponse:
         window,
         use_llm=req.use_llm,
         max_triage=req.max_triage,
+        triage_strictness=req.triage_strictness,
     )
     state = get_job(job_id)
     assert state is not None
@@ -524,7 +536,7 @@ async def job_results(
 async def job_results_csv(job_id: str, wait: bool = False) -> Response:
     """Flat CSV of every triaged link for a completed job.
 
-    28 columns, UTF-8 with BOM (Excel-friendly), list cells pipe-joined.
+    29 columns, UTF-8 with BOM (Excel-friendly), list cells pipe-joined.
     Browsers + `curl -O` save it via `Content-Disposition: attachment`.
 
     Verdicts come back in pipeline order (supports → refutes → tangential,
@@ -538,6 +550,45 @@ async def job_results_csv(job_id: str, wait: bool = False) -> Response:
     csv_text = _results_to_csv(result.triaged_links)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"outtlyr_{_safe_filename(state.hypothesis_id, state.job_id, ts)}.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/data-selection/jobs/{job_id}/discovered.csv")
+async def job_discovered_csv(job_id: str, wait: bool = False) -> Response:
+    """Flat CSV of EVERY discovered link, not just the triaged top-N.
+
+    Same 29-column schema as `/results.csv`. Links below the triage budget
+    cut have empty `verdict`/`confidence`/`signal_tags` cells (the LLM
+    never saw them). Cluster-member links carry the propagated verdict
+    from their cluster's representative.
+
+    Rationale: Change #3 — analysts want the BROADER set for downstream
+    review/spot-checks, not just the top-N the triage prioritised.
+    """
+    state = await _resolve_completed_job(job_id, wait)
+    result = state.result
+    assert result is not None
+
+    # Dedup by URL across channels — a link discovered via 2 channels would
+    # appear twice in links_by_channel; clusters already merged it once for
+    # the triaged_links path, but `links_by_channel` keeps the originals.
+    seen: set[str] = set()
+    all_links = []
+    for channel_links in result.links_by_channel.values():
+        for lk in channel_links:
+            key = (lk.canonical_url or lk.url).lower().strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            all_links.append(lk)
+
+    csv_text = _results_to_csv(all_links)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"outtlyr_{_safe_filename(state.hypothesis_id, state.job_id, ts)}_all_discovered.csv"
     return Response(
         content=csv_text,
         media_type="text/csv; charset=utf-8",

@@ -280,7 +280,8 @@ def _hit_rate(text: str, regex: Optional[Pattern]) -> Tuple[float, List[str]]:
 
 
 def _deterministic_verdict(
-    text: str, sig_rate: float, ctr_rate: float
+    text: str, sig_rate: float, ctr_rate: float,
+    strictness: TriageStrictness = DEFAULT_STRICTNESS,
 ) -> Tuple[Verdict, float]:
     """Rule-based fallback when the LLM is unavailable.
 
@@ -288,20 +289,32 @@ def _deterministic_verdict(
     - If counter hit rate dominates → refutes.
     - If signal hit rate dominates → supports.
     - Otherwise tangential.
+
+    `strictness=liberal` widens the supports/refutes net to also catch
+    weak-but-directional hits (any signal match at all), and bumps the
+    base confidence so tangential is rarely the safer call.
     """
     if not text:
-        return "tangential", 0.2
+        return "tangential", 0.2 if strictness != "liberal" else 0.3
     if ctr_rate > sig_rate and ctr_rate > 0:
-        return "refutes", min(0.85, 0.4 + ctr_rate * 25)
+        base = 0.5 if strictness == "liberal" else 0.4
+        return "refutes", min(0.85, base + ctr_rate * 25)
     if sig_rate > 0:
-        return "supports", min(0.85, 0.4 + sig_rate * 25)
+        base = 0.5 if strictness == "liberal" else 0.4
+        return "supports", min(0.85, base + sig_rate * 25)
     return "tangential", 0.3
 
 
 # ─── LLM batch verdict ───────────────────────────────────────────────────────
 
 
-_TRIAGE_SYSTEM_PROMPT = (
+# ─── Triage strictness ───────────────────────────────────────────────────────
+# Three prompt variants. "liberal" is the default per locked decision so the
+# analyst sees more decisive verdicts; "strict" is the original cautious mode.
+
+TriageStrictness = str  # Literal["strict", "balanced", "liberal"]
+
+_TRIAGE_PROMPT_COMMON = (
     "You are a measured-triage classifier for market-research evidence. "
     "Given one hypothesis and a numbered batch of evidence snippets, "
     "classify each snippet as 'supports', 'refutes', or 'tangential' with "
@@ -310,14 +323,51 @@ _TRIAGE_SYSTEM_PROMPT = (
     "'supports' = the evidence is consistent with what the hypothesis predicts; "
     "'refutes' = the evidence contradicts the hypothesis; "
     "'tangential' = on-topic but neither supports nor refutes. "
-    "Be conservative with 'supports'/'refutes' — prefer 'tangential' when "
-    "the evidence is thin, promotional, or unrelated to the hypothesis's "
-    "specific claim. "
+)
+
+_TRIAGE_PROMPT_OUTPUT = (
     "Return ONLY a JSON object with this exact shape: "
     '{"verdicts": [{"id": <int>, "verdict": "supports|refutes|tangential", '
     '"confidence": <float 0..1>, "signal_tags": [<short keyword>, ...]}]}. '
     "Output one entry per input id. No prose, no markdown."
 )
+
+_STANCE_STRICT = (
+    "Be conservative with 'supports'/'refutes' — prefer 'tangential' when "
+    "the evidence is thin, promotional, or unrelated to the hypothesis's "
+    "specific claim. Set high confidence (>0.7) only on unambiguous matches. "
+)
+_STANCE_BALANCED = (
+    "Use your best judgement: call 'supports'/'refutes' when the evidence "
+    "clearly points one way, 'tangential' when the link is on-topic but "
+    "doesn't actually answer the hypothesis. Calibrate confidence honestly. "
+)
+_STANCE_LIBERAL = (
+    "Lean toward 'supports' or 'refutes' whenever the evidence has a "
+    "discernible directional signal — even partial / indirect / single-data-"
+    "point evidence still counts. Reserve 'tangential' for content that is "
+    "genuinely off-topic, promotional fluff, or so generic it could apply to "
+    "any brand in the category. When in doubt between tangential and a weak "
+    "support/refute, PREFER the directional verdict at confidence 0.4-0.6. "
+)
+
+_TRIAGE_PROMPTS: Dict[str, str] = {
+    "strict":   _TRIAGE_PROMPT_COMMON + _STANCE_STRICT   + _TRIAGE_PROMPT_OUTPUT,
+    "balanced": _TRIAGE_PROMPT_COMMON + _STANCE_BALANCED + _TRIAGE_PROMPT_OUTPUT,
+    "liberal":  _TRIAGE_PROMPT_COMMON + _STANCE_LIBERAL  + _TRIAGE_PROMPT_OUTPUT,
+}
+
+DEFAULT_STRICTNESS: TriageStrictness = "liberal"
+
+
+def get_triage_prompt(strictness: TriageStrictness) -> str:
+    """Return the LLM system prompt for the requested strictness; falls back
+    to 'liberal' if the value is unknown."""
+    return _TRIAGE_PROMPTS.get(strictness, _TRIAGE_PROMPTS[DEFAULT_STRICTNESS])
+
+
+# Kept as a name for backward compat with any external imports.
+_TRIAGE_SYSTEM_PROMPT = _TRIAGE_PROMPTS[DEFAULT_STRICTNESS]
 
 
 def _build_batch_prompt(
@@ -346,6 +396,7 @@ def _build_batch_prompt(
 def _llm_verdict_batch(
     ctx: TriageContext,
     batch: List[Tuple[int, DiscoveredLink, str]],
+    strictness: TriageStrictness = DEFAULT_STRICTNESS,
 ) -> Dict[int, Dict[str, Any]]:
     """One Gemini call per batch. Returns {id: {verdict, confidence, signal_tags}}.
 
@@ -357,7 +408,7 @@ def _llm_verdict_batch(
     user_msg = _build_batch_prompt(ctx, batch)
     max_tokens = LLM_MAX_TOKENS_BASE + LLM_MAX_TOKENS_PER_ITEM * len(batch)
     parsed = _llm.call_llm(
-        _TRIAGE_SYSTEM_PROMPT,
+        get_triage_prompt(strictness),
         user_msg,
         expect_json=True,
         max_tokens=max_tokens,
@@ -422,6 +473,7 @@ async def triage(
     body_char_budget: int = BODY_CHAR_BUDGET,
     batch_size: int = BATCH_SIZE,
     use_llm: bool = True,
+    strictness: TriageStrictness = DEFAULT_STRICTNESS,
 ) -> List[DiscoveredLink]:
     """Triage all `links` for one hypothesis. Returns ranked list (supports→refutes→tangential).
 
@@ -460,7 +512,7 @@ async def triage(
             chunk = evidence[start: start + batch_size]
             batch_input = [(i, link, text) for (i, link, text, *_rest) in chunk]
             llm_results.update(
-                await asyncio.to_thread(_llm_verdict_batch, ctx, batch_input)
+                await asyncio.to_thread(_llm_verdict_batch, ctx, batch_input, strictness)
             )
 
     # Apply verdicts
@@ -472,7 +524,7 @@ async def triage(
             link.confidence = llm_v["confidence"]
             merged_tags = list({*hit_tags, *llm_v.get("signal_tags", [])})
         else:
-            verdict, conf = _deterministic_verdict(text, sig_rate, ctr_rate)
+            verdict, conf = _deterministic_verdict(text, sig_rate, ctr_rate, strictness)
             link.supports_or_refutes = verdict
             link.confidence = conf
             merged_tags = list({*hit_tags})

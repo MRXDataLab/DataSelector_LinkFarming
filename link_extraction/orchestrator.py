@@ -60,7 +60,7 @@ from .models import (
 )
 from .query_synthesizer import synthesize_queries
 from .source_selector import score_channels
-from .triage import group_by_verdict, triage
+from .triage import DEFAULT_STRICTNESS, TriageStrictness, group_by_verdict, triage
 
 log = logging.getLogger(__name__)
 
@@ -236,6 +236,7 @@ async def run_pipeline(
     max_links_per_channel: int = 50,
     job_id: Optional[str] = None,
     cost_cap_usd: Optional[float] = None,
+    triage_strictness: TriageStrictness = DEFAULT_STRICTNESS,
 ) -> PipelineResult:
     """Run L0–L7 for one hypothesis and emit progress events.
 
@@ -271,6 +272,8 @@ async def run_pipeline(
             "available_channels": list(reg.available_channels()),
             "cost_cap_usd": effective_cap,
             "meter_job_id": meter_job_id,
+            "triage_strictness": triage_strictness,
+            "max_triage": max_triage,
         },
     ))
 
@@ -411,6 +414,7 @@ async def run_pipeline(
             hypothesis, decomp, triage_input,
             max_triage=max_triage,
             use_llm=use_llm,
+            strictness=triage_strictness,
         )
     else:
         triaged = []

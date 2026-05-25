@@ -613,13 +613,25 @@
       </div>
       <div>
         <label for="max_triage">Triage budget (top N)</label>
-        <input id="max_triage" type="number" value="10" min="1" max="30" />
+        <input id="max_triage" type="number" value="30" min="1" max="100" />
       </div>
     </div>
-    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-      <input type="checkbox" id="use_llm" checked style="width: auto;" />
-      <span>Use LLM (Gemini) for slot-fill + triage verdicts</span>
-    </label>
+    <div class="row">
+      <div>
+        <label for="triage_strictness">Triage strictness</label>
+        <select id="triage_strictness">
+          <option value="strict">Strict — prefer tangential when in doubt</option>
+          <option value="balanced">Balanced — neutral judgement</option>
+          <option value="liberal" selected>Liberal — lean toward supports/refutes</option>
+        </select>
+      </div>
+      <div>
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-top: 22px;">
+          <input type="checkbox" id="use_llm" checked style="width: auto;" />
+          <span>Use LLM (Gemini) for slot-fill + verdicts</span>
+        </label>
+      </div>
+    </div>
 
     <div style="height: 14px;"></div>
     <button id="start">Run pipeline</button>
@@ -647,12 +659,16 @@
 
     <div id="download-bar" class="download-bar" hidden>
       <a id="download-csv" class="download-btn primary" href="#" download
-         title="Flat CSV — 28 columns, one row per triaged link, Excel-friendly UTF-8 BOM">
-        ⬇ Download CSV
+         title="Flat CSV — 29 columns × triaged-only links (top-N after the budget cut)">
+        ⬇ Triaged CSV
+      </a>
+      <a id="download-all-csv" class="download-btn" href="#" download
+         title="Same 29 columns but ALL discovered links (incl. below-cut, no-verdict rows). Bigger set for downstream review.">
+        📥 All Discovered CSV
       </a>
       <a id="download-json" class="download-btn" href="#" download
          title="Full JSON — every link with decomposition, channel fits, queries, and run metadata">
-        ⬇ Download JSON
+        ⬇ JSON
       </a>
     </div>
   </section>
@@ -777,6 +793,7 @@ $("start").addEventListener("click", async () => {
   $("channel-fits-display").innerHTML = "";
   $("download-bar").hidden = true;
   $("download-csv").removeAttribute("href");
+  $("download-all-csv").removeAttribute("href");
   $("download-json").removeAttribute("href");
   eventCount = 0;
   $("event-count").textContent = "";
@@ -799,7 +816,8 @@ $("start").addEventListener("click", async () => {
         hypothesis: hyp,
         window_label: $("window").value,
         use_llm: $("use_llm").checked,
-        max_triage: parseInt($("max_triage").value) || 10,
+        max_triage: parseInt($("max_triage").value) || 30,
+        triage_strictness: $("triage_strictness").value,
       }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -939,6 +957,7 @@ async function loadResults(jobId) {
   // the user can click immediately even if results are still being
   // serialized server-side. ?download=1 sets Content-Disposition.
   $("download-csv").href = `${API}/jobs/${jobId}/results.csv?wait=true`;
+  $("download-all-csv").href = `${API}/jobs/${jobId}/discovered.csv?wait=true`;
   $("download-json").href = `${API}/jobs/${jobId}/results?wait=true&download=1`;
   $("download-bar").hidden = false;
 
@@ -1068,6 +1087,7 @@ async function loadPastRuns(filter) {
       $("log").innerHTML = `<div class="ev"><span class="kind">memory_restore</span> Loaded ${escapeHtml(j.job_id)} from disk</div>`;
       currentJobId = j.job_id;
       $("download-csv").href = `${API}/jobs/${j.job_id}/results.csv?wait=true`;
+      $("download-all-csv").href = `${API}/jobs/${j.job_id}/discovered.csv?wait=true`;
       $("download-json").href = `${API}/jobs/${j.job_id}/results?wait=true&download=1`;
       $("download-bar").hidden = false;
       await loadResults(j.job_id);
