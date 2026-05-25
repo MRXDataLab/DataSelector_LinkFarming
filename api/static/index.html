@@ -516,6 +516,52 @@
     color: var(--text-faint);
   }
   .backend-toggle.on .pri { color: var(--teal); }
+
+  /* Geo filter (India vs ROW) */
+  .geo-filter {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin: 12px 0;
+    padding: 10px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    align-items: center;
+  }
+  .geo-filter-label {
+    color: var(--text-faint); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-right: 6px;
+  }
+  .geo-pill {
+    padding: 5px 12px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--text-dim);
+    transition: all 0.15s;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .geo-pill:hover { border-color: var(--teal-dim); }
+  .geo-pill.active {
+    background: rgba(20, 184, 166, 0.1);
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+  .geo-pill .count {
+    color: var(--text-faint);
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+  }
+  .geo-pill.active .count { color: var(--teal); }
+
+  /* Geo chip on cards */
+  .tag.geo-india {
+    color: #fbbf24;
+    border-color: #fbbf24;
+  }
+  .tag.geo-row {
+    color: var(--text-dim);
+  }
+  .card.hidden-by-filter { display: none; }
 </style>
 </head>
 <body>
@@ -758,6 +804,25 @@
 
   <!-- ── RESULTS GRID ──────────────────────────────────────────────────── -->
   <section id="results-area">
+    <div class="geo-filter" id="geo-filter" hidden>
+      <span class="geo-filter-label">Geo</span>
+      <div class="geo-pill active" data-geo="all">
+        <span>All</span>
+        <span class="count" id="geo-count-all">0</span>
+      </div>
+      <div class="geo-pill" data-geo="india">
+        <span>🇮🇳 India</span>
+        <span class="count" id="geo-count-india">0</span>
+      </div>
+      <div class="geo-pill" data-geo="row">
+        <span>🌐 ROW</span>
+        <span class="count" id="geo-count-row">0</span>
+      </div>
+      <div class="geo-pill" data-geo="unknown">
+        <span>○ Unknown</span>
+        <span class="count" id="geo-count-unknown">0</span>
+      </div>
+    </div>
     <div class="verdict-grid">
       <div class="verdict-col supports">
         <h3>● Supports <span class="badge" id="supports-badge">0</span></h3>
@@ -1043,11 +1108,49 @@ async function loadResults(jobId) {
     }
     items.forEach(link => list.appendChild(cardForLink(link)));
   });
+
+  // Geo filter pill counts (India vs ROW)
+  const allLinks = [
+    ...(data.grouped.supports || []),
+    ...(data.grouped.refutes || []),
+    ...(data.grouped.tangential || []),
+  ];
+  const counts = { all: allLinks.length, india: 0, row: 0, unknown: 0 };
+  for (const lk of allLinks) {
+    const g = lk.geo_scope || "unknown";
+    counts[g] = (counts[g] || 0) + 1;
+  }
+  $("geo-count-all").textContent = counts.all;
+  $("geo-count-india").textContent = counts.india;
+  $("geo-count-row").textContent = counts.row;
+  $("geo-count-unknown").textContent = counts.unknown;
+  $("geo-filter").hidden = (allLinks.length === 0);
+  // Reset to "All" on every fresh result load
+  document.querySelectorAll(".geo-pill").forEach(p => p.classList.remove("active"));
+  document.querySelector('.geo-pill[data-geo="all"]').classList.add("active");
+  applyGeoFilter("all");
 }
+
+function applyGeoFilter(geo) {
+  document.querySelectorAll("#results-area .card").forEach(card => {
+    const g = card.dataset.geo || "unknown";
+    const show = (geo === "all") || (g === geo);
+    card.classList.toggle("hidden-by-filter", !show);
+  });
+}
+// Geo filter click handlers — wired once at page load
+document.querySelectorAll(".geo-pill").forEach(pill => {
+  pill.addEventListener("click", () => {
+    document.querySelectorAll(".geo-pill").forEach(p => p.classList.remove("active"));
+    pill.classList.add("active");
+    applyGeoFilter(pill.dataset.geo);
+  });
+});
 
 function cardForLink(link) {
   const card = document.createElement("div");
   card.className = "card" + (link.is_short_video ? " short-video" : "");
+  card.dataset.geo = link.geo_scope || "unknown";
 
   const thumb = link.thumbnail_url
     ? `<a class="thumb-wrap" href="${escapeHtml(link.url)}" target="_blank" rel="noopener">
@@ -1071,6 +1174,10 @@ function cardForLink(link) {
   const alsoFoundOn = (link.also_found_on || []).slice(0, 4).map(c =>
     `<span class="tag short-video" style="border-color: var(--teal-dim);">↔ ${escapeHtml(c)}</span>`
   ).join("");
+  // Geo chip — India / ROW / Unknown
+  const geo = link.geo_scope || "unknown";
+  const geoLabel = geo === "india" ? "🇮🇳 IN" : geo === "row" ? "🌐 ROW" : "○ ?";
+  const geoChip = `<span class="tag geo-${escapeHtml(geo)}">${geoLabel}</span>`;
 
   const topComment = (link.top_comments && link.top_comments.length)
     ? `<div class="top-comment">${escapeHtml(link.top_comments[0])}</div>` : "";
@@ -1090,7 +1197,7 @@ function cardForLink(link) {
         <span class="verdict-badge ${link.verdict || "tangential"}">${link.verdict || "tangential"}</span>
         <span class="confidence">conf ${link.confidence != null ? link.confidence.toFixed(2) : "—"}</span>
       </div>
-      <div class="tags">${archetypeTag}${alsoFoundOn}${tags}</div>
+      <div class="tags">${geoChip}${archetypeTag}${alsoFoundOn}${tags}</div>
       ${topComment}
     </div>
   `;

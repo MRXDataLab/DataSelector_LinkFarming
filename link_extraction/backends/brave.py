@@ -21,6 +21,31 @@ from ..models import QueryVertical, RawResult, TimeWindow
 from ..temporal import to_brave_params
 from .base import SearchBackend
 
+# Map decomposer geo_hints → Brave's `country` parameter (ISO 3166-1 alpha-2).
+# Conservative — only includes countries whose Brave-search index is rich
+# enough that biasing yields more relevant results vs the default global mix.
+_GEO_HINT_TO_BRAVE_COUNTRY: dict[str, str] = {
+    "india": "IN", "indian": "IN", "bharat": "IN",
+    "us": "US", "usa": "US", "american": "US",
+    "uk": "GB", "british": "GB", "england": "GB",
+    "canada": "CA", "canadian": "CA",
+    "australia": "AU", "australian": "AU",
+    "germany": "DE", "german": "DE",
+    "france": "FR", "french": "FR",
+    "japan": "JP", "japanese": "JP",
+}
+
+
+def _brave_country_for_geo_hints(geo_hints: Optional[List[str]]) -> Optional[str]:
+    """Pick the first Brave-supported country code from a list of geo hints."""
+    if not geo_hints:
+        return None
+    for h in geo_hints:
+        code = _GEO_HINT_TO_BRAVE_COUNTRY.get((h or "").strip().lower())
+        if code:
+            return code
+    return None
+
 log = logging.getLogger(__name__)
 
 
@@ -85,6 +110,17 @@ class BraveBackend(SearchBackend):
         url = f"https://api.search.brave.com/res/v1/web/search?q={quote_plus(q)}&count={count}"
         if freshness:
             url += f"&freshness={freshness}"
+        # Country bias: when the hypothesis's geo_hints map to a Brave-
+        # supported country code, append `country=XX` so the index biases
+        # toward region-specific results. India-first hypotheses get many
+        # more .in / hindustantimes / flipkart / etc. results this way.
+        try:
+            from ..geo import current_geo_hints
+            country = _brave_country_for_geo_hints(current_geo_hints())
+            if country:
+                url += f"&country={country}"
+        except Exception:
+            pass
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()
@@ -114,6 +150,13 @@ class BraveBackend(SearchBackend):
         )
         if freshness:
             url += f"&freshness={freshness}"
+        try:
+            from ..geo import current_geo_hints
+            country = _brave_country_for_geo_hints(current_geo_hints())
+            if country:
+                url += f"&country={country}"
+        except Exception:
+            pass
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()

@@ -56,6 +56,11 @@ from .dedup import (
     propagate_verdicts_to_members,
     representatives,
 )
+from .geo import (
+    reset_current_geo_hints,
+    set_current_geo_hints,
+    tag_links as _tag_geo_scopes,
+)
 from .discoverers.base import Discoverer
 from .models import (
     ChannelFit,
@@ -148,6 +153,7 @@ def default_registry() -> DiscovererRegistry:
         (lowest-yield short-video surface + most CAPTCHA-prone)
     """
     from .discoverers.google_paa import get_google_paa
+    from .discoverers.google_web import get_google_web
     from .discoverers.marketplace import get_marketplace
     from .discoverers.news import get_news
     from .discoverers.quora import get_quora
@@ -166,12 +172,13 @@ def default_registry() -> DiscovererRegistry:
     # Discussion / Q&A
     reg.register(get_reddit())           # Step 10 — PRAW or Brave fallback
     reg.register(get_quora())            # Step 12 — Brave site:quora.com
-    # Search-graph + news
-    reg.register(get_google_paa())       # Step 10 — headless Chromium
-    reg.register(get_news())             # Step 10 — Brave news
-    # Long-form essays + reviews
+    # General web + search-graph + news
+    reg.register(get_google_web())       # Step 14b — general web articles (NEW)
+    reg.register(get_google_paa())       # Step 10  — headless Chromium PAA
+    reg.register(get_news())             # Step 10  — Brave news
+    # Long-form essays + reviews + commerce
     reg.register(get_substack())         # Step 12 — Brave site:substack.com
-    reg.register(get_marketplace())      # Step 12 — Brave w/ review hosts
+    reg.register(get_marketplace())      # Step 12 — ecom + reviews + quick commerce
     return reg
 
 
@@ -303,6 +310,9 @@ async def run_pipeline(
             "geo_hints": decomp.geo_hints,
         },
     ))
+    # Bind geo_hints to the ambient context so backends (Brave) can bias
+    # their country parameter to surface region-specific results.
+    geo_token = set_current_geo_hints(decomp.geo_hints)
 
     # ── L1 score channels ─────────────────────────────────────────────────
     emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L1_source_select"))
@@ -401,10 +411,20 @@ async def run_pipeline(
         },
     ))
 
-    # ── L5 dedup + cross-platform clustering ──────────────────────────────
+    # ── L4 (inline) geo tagging — India vs ROW ────────────────────────────
+    # Pure-fn host-pattern classifier; runs in microseconds for any link
+    # count. Sets `geo_scope` on every link in place; dedup + triage
+    # downstream inherit the tag.
     all_links: List[DiscoveredLink] = [
         link for links in links_by_channel.values() for link in links
     ]
+    geo_counts = _tag_geo_scopes(all_links)
+    emit(PipelineEvent(
+        kind="stage_done", hypothesis_id=hyp_id, stage="L4_geo_tag",
+        data={"total_links": len(all_links), **geo_counts},
+    ))
+
+    # ── L5 dedup + cross-platform clustering ──────────────────────────────
     emit(PipelineEvent(
         kind="stage_start", hypothesis_id=hyp_id, stage="L5_dedup",
         data={"input_links": len(all_links)},
@@ -480,4 +500,5 @@ async def run_pipeline(
     ))
     reset_current_job(cv_token)
     reset_current_preferences(prefs_token)
+    reset_current_geo_hints(geo_token)
     return result

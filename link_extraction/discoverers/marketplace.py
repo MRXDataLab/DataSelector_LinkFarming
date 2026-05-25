@@ -26,28 +26,68 @@ from .base import Discoverer
 
 log = logging.getLogger(__name__)
 
-# Order matters — earlier hosts get priority when we cap result count.
-# Trustpilot first (purpose-built reviews), then ecommerce.
-_MARKETPLACE_HOSTS = (
+# Three categories, each tagged separately so analysts can filter the CSV.
+# Categories are exposed as `host_category:<name>` signal tags on each link.
+
+_REVIEW_HOSTS = (
     "trustpilot.com",
-    "amazon.in", "amazon.com",
-    "flipkart.com",
-    "bestproducts.com",
-    "consumerreports.org",
-    "influenster.com",
-    "makeupalley.com",
+    "consumerreports.org", "bestproducts.com",
+    "influenster.com", "makeupalley.com",
 )
 
-# Brave honours OR of `site:` operators (max ~6 for index reliability).
-# We split into two passes if we have more than that — for v1 keep ≤6.
-_BRAVE_SITES = (
-    "trustpilot.com",
-    "amazon.in", "amazon.com",
-    "flipkart.com",
-    "consumerreports.org",
-    "influenster.com",
+# Ecommerce — Indian sites first (most relevant when geo=india), then global.
+_ECOM_HOSTS_INDIA = (
+    "flipkart.com", "myntra.com", "nykaa.com", "ajio.com",
+    "tatacliq.com", "jiomart.com", "croma.com", "snapdeal.com",
+    "meesho.com", "firstcry.com", "lenskart.com", "pepperfry.com",
+    "purplle.com", "limeroad.com", "shopclues.com",
 )
-_SITE_QUERY = " OR ".join(f"site:{h}" for h in _BRAVE_SITES)
+_ECOM_HOSTS_GLOBAL = (
+    "amazon.in", "amazon.com", "amazon.co.uk",
+    "etsy.com", "ebay.com", "walmart.com", "target.com", "bestbuy.com",
+)
+
+# Quick commerce / grocery / food delivery — Indian sites dominate this
+# category (US has Instacart but the analyst's stated need is India).
+_QUICK_COMMERCE_HOSTS = (
+    "zepto.in", "blinkit.com", "swiggy.com", "instamart.com",
+    "dunzo.com", "bigbasket.com", "zomato.com",
+)
+
+# Union for the host-allow filter (anything in any category passes).
+_MARKETPLACE_HOSTS = (
+    *_REVIEW_HOSTS,
+    *_ECOM_HOSTS_INDIA,
+    *_ECOM_HOSTS_GLOBAL,
+    *_QUICK_COMMERCE_HOSTS,
+)
+
+
+def _host_category(host: str) -> str:
+    """Return a signal-tag-friendly category for a host."""
+    if any(host.endswith(h) for h in _QUICK_COMMERCE_HOSTS):
+        return "quick_commerce"
+    if any(host.endswith(h) for h in _ECOM_HOSTS_INDIA):
+        return "ecom_india"
+    if any(host.endswith(h) for h in _ECOM_HOSTS_GLOBAL):
+        return "ecom_global"
+    if any(host.endswith(h) for h in _REVIEW_HOSTS):
+        return "reviews"
+    return "other"
+
+
+# Brave's `site:` OR clauses hit index reliability past ~6 alternations.
+# We split the search into multiple passes: one per category, then merge.
+_BRAVE_SITE_GROUPS = (
+    ("reviews",        _REVIEW_HOSTS[:5]),
+    ("ecom_india",     _ECOM_HOSTS_INDIA[:6]),
+    ("ecom_global",    _ECOM_HOSTS_GLOBAL[:5]),
+    ("quick_commerce", _QUICK_COMMERCE_HOSTS[:6]),
+)
+
+
+def _build_site_query(hosts: tuple[str, ...]) -> str:
+    return " OR ".join(f"site:{h}" for h in hosts)
 
 _HOST_FROM_URL_RE = re.compile(r"^https?://([^/]+)/", re.IGNORECASE)
 
@@ -65,7 +105,16 @@ def _is_marketplace_url(url: str) -> bool:
 
 
 class MarketplaceDiscoverer(Discoverer):
-    """Brave-backed review/marketplace domain search."""
+    """Brave-backed reviews + ecommerce + quick-commerce domain search.
+
+    Fires up to 4 Brave queries (one per category group) so the `site:OR`
+    chain stays under Brave's reliable-alternation count. Results are merged,
+    each link gets `host_category:<reviews|ecom_india|ecom_global|quick_commerce>`
+    in its signal_tags so analysts can filter / split in the CSV.
+
+    The total result count is split proportionally across category groups
+    (default: count/4 per group, then over-fetch by 2× and trim).
+    """
 
     channel_id = "marketplace"
 
@@ -81,34 +130,43 @@ class MarketplaceDiscoverer(Discoverer):
         if not get_brave().available:
             return []
 
-        raw = await search_with_fallback(
-            f"{query.text} ({_SITE_QUERY})",
-            vertical="web",
-            count=count * 2,  # over-fetch since we'll host-filter
-            window=window,
-            min_results=1,
-        )
-
+        per_group_count = max(2, count // len(_BRAVE_SITE_GROUPS))
         out: List[DiscoveredLink] = []
         seen: set[str] = set()
-        for r in raw:
-            if not _is_marketplace_url(r.url):
-                continue
-            canonical = r.url.split("#", 1)[0].rstrip("/")
-            if canonical in seen:
-                continue
-            seen.add(canonical)
-            link = raw_result_to_link(
-                r, query, self.channel_id,
-                backend_used=f"{r.backend}+marketplace_hosts",
+        # Run categories sequentially so we don't burst Brave; each category
+        # query is small.
+        for cat_name, host_list in _BRAVE_SITE_GROUPS:
+            site_q = _build_site_query(host_list)
+            raw = await search_with_fallback(
+                f"{query.text} ({site_q})",
+                vertical="web",
+                count=per_group_count * 2,
+                window=window,
+                min_results=1,
             )
-            link.url = canonical
-            link.canonical_url = canonical
-            # Tag the host so triage signal_tags carry the source brand
-            link.signal_tags = list({*link.signal_tags, f"host:{_host_of(r.url)}"})
-            out.append(link)
-            if len(out) >= count:
-                break
+            for r in raw:
+                if not _is_marketplace_url(r.url):
+                    continue
+                canonical = r.url.split("#", 1)[0].rstrip("/")
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                link = raw_result_to_link(
+                    r, query, self.channel_id,
+                    backend_used=f"{r.backend}+{cat_name}",
+                )
+                link.url = canonical
+                link.canonical_url = canonical
+                host = _host_of(r.url)
+                # Tag both the specific host AND the category for filtering.
+                link.signal_tags = list({
+                    *link.signal_tags,
+                    f"host:{host}",
+                    f"host_category:{_host_category(host)}",
+                })
+                out.append(link)
+                if len(out) >= count:
+                    return out
         return out
 
 

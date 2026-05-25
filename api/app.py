@@ -208,6 +208,7 @@ def _link_to_dict(link: DiscoveredLink) -> Dict[str, Any]:
         "snippet": link.snippet,
         "channel": link.channel,
         "also_found_on": list(link.also_found_on),
+        "geo_scope": link.geo_scope,
         "hypothesis_id": link.hypothesis_id,
         "backend_used": link.backend_used,
         "observed_at": link.observed_at.isoformat() if link.observed_at else None,
@@ -247,6 +248,7 @@ def _link_to_dict(link: DiscoveredLink) -> Dict[str, Any]:
 CSV_COLUMNS: tuple[str, ...] = (
     # Identity
     "hypothesis_id", "verdict", "confidence", "channel", "is_short_video",
+    "geo_scope",                          # india | row | unknown
     # URL
     "url", "canonical_url",
     # Content
@@ -315,6 +317,7 @@ def _link_to_csv_row(link: DiscoveredLink) -> Dict[str, str]:
         "confidence":      _fmt_num(link.confidence),
         "channel":         link.channel,
         "is_short_video":  _fmt_bool(is_sv),
+        "geo_scope":       link.geo_scope or "unknown",
         "url":             link.url,
         "canonical_url":   link.canonical_url or link.url,
         "title":           (link.title or "").replace("\r", " ").replace("\n", " "),

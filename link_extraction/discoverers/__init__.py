@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from .base import Discoverer, ShortVideoDiscoverer
 from .google_paa import GooglePAADiscoverer, get_google_paa
+from .google_web import GoogleWebDiscoverer, get_google_web
 from .marketplace import MarketplaceDiscoverer, get_marketplace
 from .news import NewsDiscoverer, get_news
 from .quora import QuoraDiscoverer, get_quora
@@ -26,6 +27,7 @@ from .youtube_shorts import YouTubeShortsDiscoverer, get_youtube_shorts
 __all__ = [
     "Discoverer",
     "GooglePAADiscoverer",
+    "GoogleWebDiscoverer",
     "MarketplaceDiscoverer",
     "NewsDiscoverer",
     "QuoraDiscoverer",
@@ -36,6 +38,7 @@ __all__ = [
     "YouTubeDiscoverer",
     "YouTubeShortsDiscoverer",
     "get_google_paa",
+    "get_google_web",
     "get_marketplace",
     "get_news",
     "get_quora",

@@ -169,6 +169,10 @@ class DiscoveredLink(BaseModel):
     # are listed here. The representative link carries the cross-platform
     # roster; cluster members keep their original (single) `channel`.
     also_found_on: List[ChannelId] = Field(default_factory=list)
+    # Populated by `geo.tag_link()` after L3 discovery: 'india', 'row',
+    # or 'unknown' based on URL host heuristics. Lets analysts filter
+    # India-specific vs Rest-of-World evidence in the verdict grid.
+    geo_scope: str = "unknown"
 
 
 class ShortVideoLink(DiscoveredLink):
