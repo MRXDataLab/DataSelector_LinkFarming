@@ -714,6 +714,16 @@ class BatchStartRequest(BaseModel):
     max_triage: int = Field(30, ge=1, le=100,
                             description="Top-N triage budget PER HYPOTHESIS")
     concurrency: int = Field(BATCH_CONCURRENCY, ge=1, le=10)
+    # Parity with single-hyp StartRequest — applied to EVERY member job
+    triage_strictness: Literal["strict", "balanced", "liberal"] = Field(
+        "liberal",
+        description="Same strictness applied to every hypothesis in the batch.",
+    )
+    backends: Optional[List[str]] = Field(
+        None,
+        description="Backend priority + on/off, applied to every hypothesis. "
+                    "Subset of ['google_free', 'brave', 'duckduckgo']. None = all enabled.",
+    )
 
 
 @app.post("/api/data-selection/batch/start")
@@ -729,6 +739,13 @@ async def batch_start(req: BatchStartRequest) -> Dict[str, Any]:
             400,
             parsed.errors[0].message if parsed.errors else "no hypotheses parsed",
         )
+    prefs = None
+    if req.backends is not None:
+        clean = [b for b in req.backends if b in ALL_BACKENDS]
+        if not clean:
+            raise HTTPException(400, "At least one backend must be enabled.")
+        prefs = BackendPreferences(enabled=clean)
+
     try:
         batch_id = create_batch(
             parsed,
@@ -736,6 +753,8 @@ async def batch_start(req: BatchStartRequest) -> Dict[str, Any]:
             default_max_triage=req.max_triage,
             use_llm=req.use_llm,
             concurrency=req.concurrency,
+            triage_strictness=req.triage_strictness,
+            backend_preferences=prefs,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

@@ -230,11 +230,14 @@ def create_batch(
     use_llm: bool = True,
     concurrency: int = BATCH_CONCURRENCY,
     registry: Optional[DiscovererRegistry] = None,
+    triage_strictness: str = "liberal",
+    backend_preferences: Optional[Any] = None,
 ) -> str:
     """Register a new batch from a `ParsedBatch` and kick off the runner task.
 
     Per-row overrides on `window_label` and `max_triage` take precedence
-    over the batch-wide defaults.
+    over the batch-wide defaults. `triage_strictness` and `backend_preferences`
+    are applied uniformly to every member.
     """
     if not parsed.hypotheses:
         raise ValueError("ParsedBatch is empty — no hypotheses to run")
@@ -262,6 +265,10 @@ def create_batch(
                        for cp_id in parsed.core_problems},
         detected_pairs=[list(p) for p in parsed.detected_pairs],
     )
+    # Stash batch-wide settings for _run_member to read (they're not stored
+    # per-BatchMember because they don't have per-row overrides today).
+    state._triage_strictness = triage_strictness  # type: ignore[attr-defined]
+    state._backend_preferences = backend_preferences  # type: ignore[attr-defined]
     _batches[batch_id] = state
 
     state.task = asyncio.create_task(
@@ -306,6 +313,8 @@ async def _run_member(
                 registry=registry,
                 use_llm=member.use_llm,
                 max_triage=member.max_triage,
+                triage_strictness=getattr(state, "_triage_strictness", "liberal"),
+                backend_preferences=getattr(state, "_backend_preferences", None),
             )
         except Exception as e:
             member.status = "error"

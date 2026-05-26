@@ -617,7 +617,7 @@
           </select>
         </div>
         <div>
-          <label for="batch-max-triage">Triage budget</label>
+          <label for="batch-max-triage">Triage budget (per hyp)</label>
           <input id="batch-max-triage" type="number" value="30" min="1" max="100" />
         </div>
         <div>
@@ -625,10 +625,46 @@
           <input id="batch-concurrency" type="number" value="3" min="1" max="10" />
         </div>
         <div>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-top: 18px;">
-            <input type="checkbox" id="batch-use-llm" checked style="width: auto;" />
-            <span style="font-size: 12px;">Use LLM</span>
+          <label for="batch-strictness">Triage strictness</label>
+          <select id="batch-strictness">
+            <option value="strict">Strict</option>
+            <option value="balanced">Balanced</option>
+            <option value="liberal" selected>Liberal</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" id="batch-use-llm" checked style="width: auto;" />
+          <span style="font-size: 12px;">Use LLM (Gemini) for slot-fill + verdicts</span>
+        </label>
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label>Search backends (priority order, top → bottom)</label>
+        <div class="backend-toggles" id="batch-backend-toggles">
+          <label class="backend-toggle on" data-backend="google_free">
+            <input type="checkbox" checked />
+            <span class="dot"></span>
+            <span>Google (free)</span>
+            <span class="pri">#1</span>
           </label>
+          <label class="backend-toggle on" data-backend="brave">
+            <input type="checkbox" checked />
+            <span class="dot"></span>
+            <span>Brave</span>
+            <span class="pri">#2</span>
+          </label>
+          <label class="backend-toggle on" data-backend="duckduckgo">
+            <input type="checkbox" checked />
+            <span class="dot"></span>
+            <span>DuckDuckGo</span>
+            <span class="pri">#3</span>
+          </label>
+        </div>
+        <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
+          Applied to every hypothesis in the batch. Same channels used as the single-hyp form.
         </div>
       </div>
 
@@ -646,6 +682,23 @@
           <span class="count" id="batch-event-count"></span>
         </h2>
         <div id="batch-meta" style="color: var(--text-faint); font-size: 11px; margin-bottom: 10px; font-family: ui-monospace, monospace;"></div>
+
+        <div id="batch-quota-warning" hidden style="
+          margin-bottom: 12px; padding: 10px 14px;
+          background: rgba(248,113,113,0.08);
+          border: 1px solid var(--refutes);
+          border-radius: 6px;
+          color: var(--refutes); font-size: 12px; line-height: 1.5;
+        ">
+          <strong>⚠ All members finished with 0 discovered links.</strong>
+          This usually means the upstream search APIs are quota-exhausted:
+          <ul style="margin: 6px 0 0 18px; padding: 0;">
+            <li>Brave Search API → HTTP 402 (monthly free-tier quota exhausted; resets on the 1st)</li>
+            <li>YouTube Data API → HTTP 429 (daily quota exhausted; resets at midnight Pacific)</li>
+          </ul>
+          Check the server log for explicit HTTP-402 / HTTP-429 messages, or try
+          again later, or switch the backend selector to Google (free) only if it isn't already.
+        </div>
 
         <div class="batch-aggregate">
           <div class="stat"><div class="label">Members done</div><div class="value" id="batch-stat-done">0 / 0</div></div>
@@ -1221,15 +1274,16 @@ document.querySelectorAll(".backend-toggle").forEach(el => {
     el.classList.toggle("on", cb.checked);
   });
 });
-function getEnabledBackends() {
+
+function _enabledBackendsFrom(rootId) {
   const out = [];
-  document.querySelectorAll(".backend-toggle").forEach(el => {
+  const root = document.getElementById(rootId) || document;
+  root.querySelectorAll(".backend-toggle").forEach(el => {
     const cb = el.querySelector("input");
     if (cb.checked) out.push(el.dataset.backend);
   });
   if (out.length === 0) {
-    // UI safety net — re-enable Google so the request doesn't 400
-    const first = document.querySelector(".backend-toggle");
+    const first = root.querySelector(".backend-toggle");
     if (first) {
       first.querySelector("input").checked = true;
       first.classList.add("on");
@@ -1237,6 +1291,25 @@ function getEnabledBackends() {
     }
   }
   return out;
+}
+
+// Single-hyp form: every .backend-toggle not inside the batch section
+function getEnabledBackends() {
+  // Single-hyp toggles live under the main panel (NOT under batch-backend-toggles)
+  const out = [];
+  document.querySelectorAll(".backend-toggle").forEach(el => {
+    // Skip anything inside the batch section's toggles
+    if (el.closest("#batch-backend-toggles")) return;
+    const cb = el.querySelector("input");
+    if (cb.checked) out.push(el.dataset.backend);
+  });
+  if (out.length === 0) return ["google_free"];
+  return out;
+}
+
+// Batch form: only the batch-backend-toggles container
+function getBatchEnabledBackends() {
+  return _enabledBackendsFrom("batch-backend-toggles");
 }
 
 // ── PAST RUNS (Step 14 — memory store) ───────────────────────────────────
@@ -1419,6 +1492,8 @@ $("batch-start").addEventListener("click", async () => {
         use_llm: $("batch-use-llm").checked,
         max_triage: parseInt($("batch-max-triage").value) || 30,
         concurrency: parseInt($("batch-concurrency").value) || 3,
+        triage_strictness: $("batch-strictness").value,
+        backends: getBatchEnabledBackends(),
       }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -1444,6 +1519,7 @@ $("batch-start").addEventListener("click", async () => {
   renderBatchTable(status);
 
   $("batch-download-bar").hidden = true;
+  $("batch-quota-warning").hidden = true;
 
   // Subscribe SSE
   if (currentBatchEventSource) currentBatchEventSource.close();
@@ -1508,6 +1584,15 @@ $("batch-start").addEventListener("click", async () => {
         $("batch-download-csv-raw").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true&raw=true`;
         $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
         $("batch-download-bar").hidden = false;
+
+        // Empty-result quota warning — surface if EVERY member returned 0 verdicts
+        try {
+          const allZero = batchMembers.every(m => {
+            const vc = m.verdict_counts || {};
+            return (vc.supports||0) + (vc.refutes||0) + (vc.tangential||0) === 0;
+          });
+          $("batch-quota-warning").hidden = !allZero;
+        } catch {}
         $("batch-start").disabled = false;
         $("batch-start").textContent = "Run batch";
       }
