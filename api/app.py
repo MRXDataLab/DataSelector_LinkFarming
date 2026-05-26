@@ -711,7 +711,8 @@ class BatchStartRequest(BaseModel):
     csv_text: str = Field(..., description="Raw CSV content (already validated via /batch/preview)")
     window_label: WindowLabel = "1y"
     use_llm: bool = True
-    max_triage: int = Field(10, ge=1, le=30)
+    max_triage: int = Field(30, ge=1, le=100,
+                            description="Top-N triage budget PER HYPOTHESIS")
     concurrency: int = Field(BATCH_CONCURRENCY, ge=1, le=10)
 
 
@@ -798,11 +799,11 @@ async def batch_events(batch_id: str) -> StreamingResponse:
     )
 
 
-async def _aggregate_batch_links(state: BatchState):
-    """Walk every member's job and collect its triaged links + provenance.
+async def _aggregate_batch_links(state: BatchState, *, source: str = "triaged"):
+    """Walk every member's job and collect (member, link) pairs.
 
-    Returns a list of (member, link) tuples in member order, then link
-    order within each member.
+    `source="triaged"` → final ranked top-N per hypothesis (default).
+    `source="discovered"` → every discovered link from links_by_channel.
     """
     out = []
     for member in state.members:
@@ -811,18 +812,153 @@ async def _aggregate_batch_links(state: BatchState):
         job = get_job(member.job_id)
         if job is None or job.result is None:
             continue
-        for link in job.result.triaged_links:
+        if source == "triaged":
+            links = list(job.result.triaged_links)
+        else:
+            # All discovered, dedup-by-URL within this hypothesis
+            seen: set[str] = set()
+            links = []
+            for channel_links in job.result.links_by_channel.values():
+                for lk in channel_links:
+                    key = (lk.canonical_url or lk.url).lower().strip()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    links.append(lk)
+        for link in links:
             out.append((member, link))
     return out
 
 
+# Importing here to avoid a circular dep at module-load time and to keep the
+# dedup logic close to its only batch consumer.
+from link_extraction.dedup import canonical_url as _canon_url  # noqa: E402
+
+
+def _build_deduped_batch_csv(
+    state: BatchState,
+    pairs: List,
+) -> str:
+    """Cross-hypothesis dedup: ONE row per unique canonical URL.
+
+    For each unique link, the row aggregates pipe-delimited:
+      - hypothesis_ids that found it
+      - core_problem_ids those hypotheses belong to
+      - verdicts_by_hypothesis (each entry: "h_006:supports:0.85")
+      - verdict_majority (mode across the per-hyp verdicts)
+      - confidence_max (highest across the per-hyp triage)
+    All other fields (channel, geo, title, snippet, engagement, etc.) come
+    from the link itself — they're identical across hypotheses since it's
+    the SAME URL.
+    """
+    from collections import OrderedDict
+
+    grouped: "OrderedDict[str, dict]" = OrderedDict()
+    for member, link in pairs:
+        key = _canon_url(link.canonical_url or link.url)
+        if not key:
+            continue
+        if key not in grouped:
+            grouped[key] = {
+                "rep_link": link,
+                "hypothesis_ids": [],
+                "core_problem_ids": [],
+                "core_problem_statements": [],
+                "verdicts": [],  # list of (hyp_id, verdict, confidence)
+                "first_member": member,
+            }
+        g = grouped[key]
+        if member.hypothesis_id not in g["hypothesis_ids"]:
+            g["hypothesis_ids"].append(member.hypothesis_id)
+            g["core_problem_ids"].append(member.core_problem_id)
+            cp_stmt = state.core_problems.get(member.core_problem_id, "")
+            if cp_stmt not in g["core_problem_statements"]:
+                g["core_problem_statements"].append(cp_stmt)
+        g["verdicts"].append((
+            member.hypothesis_id,
+            link.supports_or_refutes or "",
+            link.confidence,
+        ))
+        # Prefer the richest link as the representative — same logic as L5
+        # cluster representative selection.
+        existing = g["rep_link"]
+        if isinstance(link, ShortVideoLink) and not isinstance(existing, ShortVideoLink):
+            g["rep_link"] = link
+        elif (isinstance(link, ShortVideoLink) and
+              isinstance(existing, ShortVideoLink) and
+              (link.view_count or 0) > (existing.view_count or 0)):
+            g["rep_link"] = link
+
+    # Render CSV
+    batch_cols = (
+        "canonical_url",
+        "n_hypotheses",
+        "hypothesis_ids",
+        "core_problem_ids",
+        "core_problem_statements",
+        "verdict_majority",
+        "confidence_max",
+        "verdicts_by_hypothesis",
+    )
+    fieldnames = list(batch_cols) + list(CSV_COLUMNS)
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM
+    writer = csv.DictWriter(
+        buf, fieldnames=fieldnames,
+        extrasaction="ignore", quoting=csv.QUOTE_MINIMAL,
+    )
+    writer.writeheader()
+
+    for key, g in grouped.items():
+        # Verdict majority (mode); ties default to the first encountered
+        verdicts = [v for (_, v, _) in g["verdicts"] if v]
+        if verdicts:
+            from collections import Counter
+            counts = Counter(verdicts)
+            verdict_majority = counts.most_common(1)[0][0]
+        else:
+            verdict_majority = ""
+        # Max confidence across all per-hyp triage calls
+        confidences = [c for (_, _, c) in g["verdicts"] if c is not None]
+        confidence_max = max(confidences) if confidences else None
+        # Verdicts-by-hypothesis: pipe-delimited "hyp_id:verdict:conf"
+        vbh_pieces = []
+        for hyp_id, v, c in g["verdicts"]:
+            v_str = v or "—"
+            c_str = f"{c:.2f}" if c is not None else "—"
+            vbh_pieces.append(f"{hyp_id}:{v_str}:{c_str}")
+
+        row: Dict[str, str] = {
+            "canonical_url":           key,
+            "n_hypotheses":            str(len(g["hypothesis_ids"])),
+            "hypothesis_ids":          _join_list(g["hypothesis_ids"]),
+            "core_problem_ids":        _join_list(g["core_problem_ids"]),
+            "core_problem_statements": _join_list(g["core_problem_statements"]),
+            "verdict_majority":        verdict_majority,
+            "confidence_max":          _fmt_num(confidence_max),
+            "verdicts_by_hypothesis":  _join_list(vbh_pieces),
+        }
+        # Per-link fields (channel, title, snippet, geo, engagement, etc.)
+        row.update(_link_to_csv_row(g["rep_link"]))
+        writer.writerow(row)
+
+    return buf.getvalue()
+
+
 @app.get("/api/data-selection/batch/{batch_id}/results.csv")
-async def batch_results_csv(batch_id: str, wait: bool = False) -> Response:
+async def batch_results_csv(
+    batch_id: str, wait: bool = False, raw: bool = False,
+) -> Response:
     """Aggregated CSV across every hypothesis in the batch.
 
-    Schema = the same 28 columns as /jobs/.../results.csv, plus 2 batch
-    columns prepended: `core_problem_id` and `core_problem_statement`.
-    Rows are emitted in CSV order (the order the analyst uploaded).
+    DEFAULT (deduped): one row per UNIQUE canonical URL. Duplicates across
+    hypotheses are collapsed and tagged with `hypothesis_ids`,
+    `core_problem_ids`, `verdicts_by_hypothesis` (pipe-delimited).
+    Schema = 8 dedup columns + the 29-column per-link schema = 37 columns.
+
+    `?raw=true` → legacy view: one row per (link, hypothesis-that-found-it).
+    Same link found by 3 hypotheses produces 3 rows. Useful for debugging
+    or for joining back to per-hypothesis state.
     """
     state = get_batch(batch_id)
     if state is None:
@@ -833,28 +969,91 @@ async def batch_results_csv(batch_id: str, wait: bool = False) -> Response:
         else:
             raise HTTPException(409, f"batch not done yet (status={state.status})")
 
-    # Build the CSV manually so we can prepend the 2 batch-level columns
-    pairs = await _aggregate_batch_links(state)
-    buf = io.StringIO()
-    buf.write("﻿")  # UTF-8 BOM
-    batch_cols = ("core_problem_id", "core_problem_statement")
-    writer = csv.DictWriter(
-        buf, fieldnames=list(batch_cols) + list(CSV_COLUMNS),
-        extrasaction="ignore", quoting=csv.QUOTE_MINIMAL,
-    )
-    writer.writeheader()
-    for member, link in pairs:
-        row = {
-            "core_problem_id": member.core_problem_id,
-            "core_problem_statement": state.core_problems.get(member.core_problem_id, ""),
-        }
-        row.update(_link_to_csv_row(link))
-        writer.writerow(row)
+    pairs = await _aggregate_batch_links(state, source="triaged")
+
+    if raw:
+        # Legacy per-member CSV (one row per link-per-hyp)
+        buf = io.StringIO()
+        buf.write("﻿")
+        batch_cols = ("core_problem_id", "core_problem_statement")
+        writer = csv.DictWriter(
+            buf, fieldnames=list(batch_cols) + list(CSV_COLUMNS),
+            extrasaction="ignore", quoting=csv.QUOTE_MINIMAL,
+        )
+        writer.writeheader()
+        for member, link in pairs:
+            row = {
+                "core_problem_id": member.core_problem_id,
+                "core_problem_statement": state.core_problems.get(
+                    member.core_problem_id, ""),
+            }
+            row.update(_link_to_csv_row(link))
+            writer.writerow(row)
+        csv_text = buf.getvalue()
+        suffix = "raw"
+    else:
+        csv_text = _build_deduped_batch_csv(state, pairs)
+        suffix = "deduped"
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}.csv"
+    filename = f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}_{suffix}.csv"
     return Response(
-        content=buf.getvalue(),
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/data-selection/batch/{batch_id}/discovered.csv")
+async def batch_discovered_csv(
+    batch_id: str, wait: bool = False, raw: bool = False,
+) -> Response:
+    """Aggregated CSV of every DISCOVERED link in the batch (pre-triage cut).
+
+    Same deduped-by-URL schema as `/results.csv` but spans the broader set —
+    every link L3 discovery returned, not just the top-N triaged per hyp.
+    Useful when the triage budget cut links the analyst still wants to review.
+
+    `?raw=true` → legacy per-member CSV view.
+    """
+    state = get_batch(batch_id)
+    if state is None:
+        raise HTTPException(404, f"unknown batch_id: {batch_id}")
+    if state.status not in ("done", "error", "partial"):
+        if wait:
+            state = await await_batch_completion(batch_id, timeout=3600)
+        else:
+            raise HTTPException(409, f"batch not done yet (status={state.status})")
+
+    pairs = await _aggregate_batch_links(state, source="discovered")
+
+    if raw:
+        buf = io.StringIO()
+        buf.write("﻿")
+        batch_cols = ("core_problem_id", "core_problem_statement")
+        writer = csv.DictWriter(
+            buf, fieldnames=list(batch_cols) + list(CSV_COLUMNS),
+            extrasaction="ignore", quoting=csv.QUOTE_MINIMAL,
+        )
+        writer.writeheader()
+        for member, link in pairs:
+            row = {
+                "core_problem_id": member.core_problem_id,
+                "core_problem_statement": state.core_problems.get(
+                    member.core_problem_id, ""),
+            }
+            row.update(_link_to_csv_row(link))
+            writer.writerow(row)
+        csv_text = buf.getvalue()
+        suffix = "discovered_raw"
+    else:
+        csv_text = _build_deduped_batch_csv(state, pairs)
+        suffix = "discovered_deduped"
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}_{suffix}.csv"
+    return Response(
+        content=csv_text,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

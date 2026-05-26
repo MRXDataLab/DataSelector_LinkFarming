@@ -618,7 +618,7 @@
         </div>
         <div>
           <label for="batch-max-triage">Triage budget</label>
-          <input id="batch-max-triage" type="number" value="5" min="1" max="30" />
+          <input id="batch-max-triage" type="number" value="30" min="1" max="100" />
         </div>
         <div>
           <label for="batch-concurrency">Concurrency</label>
@@ -658,12 +658,20 @@
 
         <div id="batch-download-bar" class="download-bar" hidden>
           <a id="batch-download-csv" class="download-btn primary" href="#" download
-             title="Aggregated CSV — 30 columns (2 batch + 28 link), every hypothesis pooled, opens in Excel/Sheets">
-            ⬇ Download batch CSV
+             title="Triaged CSV — one row per UNIQUE URL across all hypotheses, with hypothesis_ids + core_problem_ids + verdicts_by_hypothesis pipe-delimited">
+            ⬇ Triaged CSV (deduped)
+          </a>
+          <a id="batch-download-discovered" class="download-btn" href="#" download
+             title="All Discovered CSV — same dedup schema but the BROADER set (every L3 link, not just the triaged top-N per hyp)">
+            📥 All Discovered CSV
+          </a>
+          <a id="batch-download-csv-raw" class="download-btn" href="#" download
+             title="Raw per-(link, hypothesis) view — one row per link-per-hyp. For debugging or joining back to per-hypothesis state.">
+            ⬇ Raw CSV (per-hyp rows)
           </a>
           <a id="batch-download-json" class="download-btn" href="#" download
              title="Full nested batch JSON — core_problem → hypothesis → grouped links">
-            ⬇ Download batch JSON
+            ⬇ JSON
           </a>
         </div>
       </div>
@@ -1409,7 +1417,7 @@ $("batch-start").addEventListener("click", async () => {
         csv_text: currentCSVText,
         window_label: $("batch-window").value,
         use_llm: $("batch-use-llm").checked,
-        max_triage: parseInt($("batch-max-triage").value) || 5,
+        max_triage: parseInt($("batch-max-triage").value) || 30,
         concurrency: parseInt($("batch-concurrency").value) || 3,
       }),
     });
@@ -1496,6 +1504,8 @@ $("batch-start").addEventListener("click", async () => {
           updateBatchAggregateStats();
         } catch {}
         $("batch-download-csv").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true`;
+        $("batch-download-discovered").href = `${API}/batch/${batch.batch_id}/discovered.csv?wait=true`;
+        $("batch-download-csv-raw").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true&raw=true`;
         $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
         $("batch-download-bar").hidden = false;
         $("batch-start").disabled = false;
