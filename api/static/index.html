@@ -986,6 +986,7 @@
           <label class="backend-toggle on" data-backend="duckduckgo"><input type="checkbox" checked /></label>
         </div>
         <div id="batch-preview"></div>
+        <span id="csv-filename"></span>
         <button id="batch-start" disabled>Run batch</button>
         <button id="batch-clear"></button>
       </div>
@@ -2041,21 +2042,26 @@ let currentBatchEventSource = null;
 let batchEventCount = 0;
 let batchMembers = []; // refreshed from preview, then mutated by SSE
 
+// Legacy CSV intake (removed from the visible UI but the DOM elements
+// are kept as hidden no-ops upstream). Guard against missing elements so
+// this block doesn't NPE and kill the entire script — that's what broke
+// the manifest upload after the CSV section was removed.
 const dz = $("drop-zone");
 const fileInput = $("csv-input");
-
-dz.addEventListener("click", () => fileInput.click());
-dz.addEventListener("dragover", (e) => {
-  e.preventDefault(); dz.classList.add("dragover");
-});
-dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
-dz.addEventListener("drop", (e) => {
-  e.preventDefault(); dz.classList.remove("dragover");
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener("change", (e) => {
-  if (e.target.files.length) handleFile(e.target.files[0]);
-});
+if (dz && fileInput) {
+  dz.addEventListener("click", () => fileInput.click());
+  dz.addEventListener("dragover", (e) => {
+    e.preventDefault(); dz.classList.add("dragover");
+  });
+  dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault(); dz.classList.remove("dragover");
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener("change", (e) => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
+  });
+}
 
 async function handleFile(file) {
   if (!file.name.toLowerCase().endsWith(".csv")) {

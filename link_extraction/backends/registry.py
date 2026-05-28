@@ -6,6 +6,14 @@ Per-job priority order is determined by the ambient `BackendPreferences`
 users can flip individual backends off via the demo UI, in which case
 disabled backends are skipped entirely.
 
+Per-vertical override (added 2026-05-29) — for the `web`, `news`,
+`videos`, and `forums` verticals, **Brave is promoted to the front of
+the chain** regardless of the user's default ordering. Brave's API is
+faster and immune to the CAPTCHA wall that randomly knocks headless
+Google offline mid-batch. For the remaining verticals
+(`paa`, `related`, `scholar`, `local`) only headless Google is capable,
+so no override applies.
+
 Verticals only Google exposes (`paa`, `related`) go straight to headless
 even when Google is disabled in prefs — the discoverer is responsible
 for handling that case (will simply return [] when Google is off).
@@ -30,6 +38,27 @@ log = logging.getLogger(__name__)
 # Phase 1.6 adds `scholar` (scholar.google.com) and `local` (Google local
 # 3-pack inline in web SERPs).
 HEADLESS_ONLY: set[str] = {"paa", "related", "scholar", "local"}
+
+# Verticals where Brave's API beats headless Google on speed + reliability
+# (no CAPTCHA risk, structured JSON). User directive 2026-05-29: prefer
+# Brave first for these, then headless Google, then DDG. Other verticals
+# (PAA/related/scholar/local) are headless-only anyway, so no override
+# needed there.
+BRAVE_PREFERRED_VERTICALS: set[str] = {"web", "news", "videos", "forums"}
+
+
+def _reorder_for_vertical(enabled_ids: List[str], vertical: QueryVertical) -> List[str]:
+    """Promote `brave` to the front of the chain for Brave-preferred verticals.
+
+    Only reshuffles when Brave is actually enabled; respects the user's full
+    on/off selection. Other backends retain their relative order behind Brave.
+    """
+    if vertical not in BRAVE_PREFERRED_VERTICALS:
+        return enabled_ids
+    if "brave" not in enabled_ids:
+        return enabled_ids
+    rest = [b for b in enabled_ids if b != "brave"]
+    return ["brave", *rest]
 
 # ── Singletons ──────────────────────────────────────────────────────────────
 
@@ -104,6 +133,8 @@ async def search_with_fallback(
     """
     prefs = current_preferences()
     enabled_ids = prefs.backend_ids_in_order  # priority order
+    # Per-vertical override: Brave-first for web/news/videos/forums.
+    enabled_ids = _reorder_for_vertical(enabled_ids, vertical)
 
     # Headless-only verticals — wait for headless to come back if it's blocked.
     if vertical in HEADLESS_ONLY:
