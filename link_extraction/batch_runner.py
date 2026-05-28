@@ -219,6 +219,43 @@ def clear_batches() -> None:
     _batches.clear()
 
 
+def cancel_batch(batch_id: str) -> bool:
+    """Cancel a running batch — kills the asyncio task, marks queued/running
+    members as 'skipped', flips state.status to 'partial'. Idempotent.
+
+    Returns True on cancel, False if batch unknown or already terminal.
+    """
+    state = _batches.get(batch_id)
+    if state is None:
+        return False
+    if state.status in ("done", "error", "partial"):
+        return False
+    # Cancel the asyncio task (members still in flight will raise
+    # CancelledError; their member-status flips to error via the wrapper).
+    if state.task is not None and not state.task.done():
+        state.task.cancel()
+    # Mark queued/running members as skipped + flip state
+    now = datetime.now(timezone.utc)
+    for m in state.members:
+        if m.status in ("queued", "running"):
+            m.status = "skipped"
+            m.error = "cancelled by user"
+            if m.finished_at is None:
+                m.finished_at = now
+    state.status = "partial"
+    state.error = "cancelled by user"
+    state.updated_at = now
+    state.completion_event.set()
+    state._close_subscribers()
+    # Persist the cancelled state to disk
+    try:
+        from .memory_store import get_store
+        get_store().save_batch(state)
+    except Exception as e:
+        log.warning("save_batch on cancel failed for %s: %s", batch_id, e)
+    return True
+
+
 # ─── Batch lifecycle ─────────────────────────────────────────────────────────
 
 

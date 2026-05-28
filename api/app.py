@@ -98,6 +98,7 @@ from link_extraction import (  # noqa: E402
     WindowLabel,
     await_batch_completion,
     await_completion,
+    cancel_batch,
     create_batch,
     create_job,
     default_registry,
@@ -1070,6 +1071,37 @@ async def list_all_batches() -> Dict[str, Any]:
     return {"batches": [b.to_summary() for b in list_batches()]}
 
 
+@app.post("/api/data-selection/batch/{batch_id}/cancel")
+async def batch_cancel(batch_id: str) -> Dict[str, Any]:
+    """Cancel a running/queued batch.
+
+    Marks queued + running members as 'skipped', cancels the asyncio task,
+    flips state.status to 'partial', and persists the final snapshot to
+    disk. Already-completed members keep their results.
+
+    Returns 404 if unknown, 409 if already terminal. Idempotent at the
+    "already cancelled" level.
+    """
+    state = get_batch(batch_id)
+    if state is None:
+        raise HTTPException(404, f"unknown batch_id: {batch_id}")
+    if state.status in ("done", "error", "partial") and state.error != "cancelled by user":
+        # Already terminal for non-cancel reason — return current state
+        return {"batch_id": batch_id, "status": state.status,
+                "cancelled": False, "reason": "already terminal"}
+    ok = cancel_batch(batch_id)
+    state = get_batch(batch_id)
+    return {
+        "batch_id": batch_id,
+        "status": state.status if state else "?",
+        "cancelled": ok,
+        "members_skipped": (
+            sum(1 for m in state.members if m.status == "skipped")
+            if state else 0
+        ),
+    }
+
+
 @app.get("/api/data-selection/batch/{batch_id}")
 async def batch_status(batch_id: str) -> Dict[str, Any]:
     state = get_batch(batch_id)
@@ -1209,8 +1241,31 @@ def _build_deduped_batch_csv(
         "verdict_majority",
         "confidence_max",
         "verdicts_by_hypothesis",
+        # Phase 3 — synthesis columns. One row per UNIQUE url; per-hypothesis
+        # synthesis verdicts are pipe-delimited. `quote_for_this_url` is the
+        # extracted verbatim quote from THIS link IF this hypothesis had
+        # synthesis enabled. Blank otherwise.
+        "synthesis_verdicts_by_hypothesis",
+        "synthesis_paragraphs_by_hypothesis",
+        "quote_extracted_for_this_url",
+        "quote_stance_for_this_url",
     )
     fieldnames = list(batch_cols) + list(CSV_COLUMNS)
+
+    # Build a per-hypothesis index of synthesis output for quick lookup —
+    # avoids re-walking all member-jobs per link.
+    syn_by_hyp: Dict[str, Dict[str, Any]] = {}
+    quotes_by_hyp_and_url: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for m in state.members:
+        if not m.job_id:
+            continue
+        j = get_job(m.job_id)
+        if j is None or j.result is None:
+            continue
+        if j.result.synthesis:
+            syn_by_hyp[m.hypothesis_id] = j.result.synthesis
+        if j.result.quotes_by_url:
+            quotes_by_hyp_and_url[m.hypothesis_id] = j.result.quotes_by_url
     buf = io.StringIO()
     buf.write("﻿")  # UTF-8 BOM
     writer = csv.DictWriter(
@@ -1238,6 +1293,29 @@ def _build_deduped_batch_csv(
             c_str = f"{c:.2f}" if c is not None else "—"
             vbh_pieces.append(f"{hyp_id}:{v_str}:{c_str}")
 
+        # Synthesis columns — for each hypothesis that touched this URL,
+        # collect its overall synthesis verdict + paragraph + (if extracted)
+        # the verbatim quote that came specifically from THIS URL.
+        syn_verdicts: List[str] = []
+        syn_paragraphs: List[str] = []
+        quote_for_url = ""
+        quote_stance_for_url = ""
+        for hyp_id in g["hypothesis_ids"]:
+            s = syn_by_hyp.get(hyp_id)
+            if s:
+                vs = (s.get("verdict_summary") or "").strip()
+                if vs:
+                    syn_verdicts.append(f"{hyp_id}: {vs}")
+                para = (s.get("synthesis_paragraph") or "").strip()
+                if para:
+                    syn_paragraphs.append(f"{hyp_id}: {para}")
+            # Per-URL extracted quote (this hypothesis's L6.5 output)
+            qmap = quotes_by_hyp_and_url.get(hyp_id, {})
+            q = qmap.get(key) or qmap.get(g["rep_link"].url or "")
+            if q and q.get("quote") and not quote_for_url:
+                quote_for_url = q["quote"]
+                quote_stance_for_url = q.get("stance", "")
+
         row: Dict[str, str] = {
             "canonical_url":           key,
             "n_hypotheses":            str(len(g["hypothesis_ids"])),
@@ -1247,6 +1325,10 @@ def _build_deduped_batch_csv(
             "verdict_majority":        verdict_majority,
             "confidence_max":          _fmt_num(confidence_max),
             "verdicts_by_hypothesis":  _join_list(vbh_pieces),
+            "synthesis_verdicts_by_hypothesis":   _join_list(syn_verdicts),
+            "synthesis_paragraphs_by_hypothesis": _join_list(syn_paragraphs),
+            "quote_extracted_for_this_url":       quote_for_url,
+            "quote_stance_for_this_url":          quote_stance_for_url,
         }
         # Per-link fields (channel, title, snippet, geo, engagement, etc.)
         row.update(_link_to_csv_row(g["rep_link"]))
@@ -1393,6 +1475,233 @@ async def batch_discovered_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/data-selection/batch/{batch_id}/synthesis.html")
+async def batch_synthesis_html(
+    batch_id: str, partial: bool = False,
+) -> Response:
+    """Phase 3 — printable HTML report of all per-hypothesis synthesis cards.
+
+    One self-contained HTML page: manifest context block + grouped cards
+    by core problem. Each card carries:
+      • verdict summary headline
+      • 2-3 sentence synthesis paragraph
+      • strongest support quote (with source URL)
+      • strongest refute quote
+      • coverage-gap pills
+
+    Linkable + shareable + Cmd+P printable. Designed for slide-deck inserts
+    + client emails — analyst can ship this to the client as the final
+    deliverable.
+
+    `?partial=true` includes whatever's done so far (skips members with no
+    job_id or no synthesis output).
+    """
+    state = get_batch(batch_id)
+    if state is None:
+        raise HTTPException(404, f"unknown batch_id: {batch_id}")
+    if state.status not in ("done", "error", "partial") and not partial:
+        raise HTTPException(409, f"batch not done yet (status={state.status}). "
+                                  f"Pass ?partial=true to bypass.")
+
+    # Walk members, collect synthesis blocks grouped by core_problem_id
+    by_cp: Dict[str, List[Dict[str, Any]]] = {}
+    research_ctx_dict: Optional[Dict[str, Any]] = None
+    for m in state.members:
+        if not m.job_id:
+            continue
+        j = get_job(m.job_id)
+        if j is None or j.result is None:
+            continue
+        # Pull the research_context from the pipeline_start event in history
+        if research_ctx_dict is None:
+            for ev in (j.history or []):
+                if ev.kind == "pipeline_start":
+                    rc = (ev.data or {}).get("research_context")
+                    if rc:
+                        research_ctx_dict = rc
+                        break
+        syn = j.result.synthesis
+        if not syn:
+            continue
+        by_cp.setdefault(m.core_problem_id, []).append({
+            "hypothesis_id": m.hypothesis_id,
+            "statement": m.hypothesis.get("statement", ""),
+            "synthesis": syn,
+            "verdict_counts": {k: len(v) for k, v in j.result.grouped.items()},
+        })
+
+    # Render HTML
+    html = _render_synthesis_html(state, by_cp, research_ctx_dict)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    partial_tag = ""
+    if state.status == "running":
+        done = sum(1 for m in state.members if m.status == "done")
+        partial_tag = f"_partial_{done}of{len(state.members)}"
+    filename = (
+        f"outtlyr_synthesis_{_safe_filename(state.batch_id, ts)}{partial_tag}.html"
+    )
+    return Response(
+        content=html, media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+def _render_synthesis_html(
+    state: "BatchState",
+    by_cp: Dict[str, List[Dict[str, Any]]],
+    research_ctx: Optional[Dict[str, Any]],
+) -> str:
+    """Build the printable synthesis HTML report.
+
+    Self-contained — embedded CSS, no JS. Lays out as a long single-column
+    document that prints cleanly with `Cmd+P → Save as PDF`.
+    """
+    import html as _h
+
+    css = """
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+             max-width: 900px; margin: 0 auto; padding: 40px 24px;
+             color: #1a1a1a; line-height: 1.55; background: #fafafa; }
+      h1 { font-size: 26px; margin-bottom: 6px; }
+      h2 { font-size: 18px; margin-top: 32px; padding-bottom: 6px;
+           border-bottom: 1px solid #ccc; color: #333; }
+      .meta { color: #666; font-size: 12px; margin-bottom: 24px;
+              font-family: ui-monospace, monospace; }
+      .ctx-card { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+                  padding: 14px 18px; margin-bottom: 18px; }
+      .ctx-card .ctx-row { display: flex; gap: 8px; align-items: baseline;
+                           margin-bottom: 4px; font-size: 13px; }
+      .ctx-card .ctx-label { font-weight: 600; min-width: 110px; color: #555; }
+      .hyp-card { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+                  padding: 18px 22px; margin-bottom: 16px;
+                  break-inside: avoid; page-break-inside: avoid; }
+      .hyp-card .hyp-id { color: #2bb09a; font-family: ui-monospace, monospace;
+                          font-weight: 600; font-size: 12px; }
+      .hyp-card .hyp-statement { font-size: 13px; color: #444; margin: 4px 0 10px 0;
+                                 font-style: italic; }
+      .hyp-card .verdict-summary { font-size: 16px; font-weight: 700;
+                                   color: #2bb09a; margin: 8px 0 8px 0; }
+      .hyp-card .synthesis-paragraph { font-size: 14px; margin-bottom: 12px; }
+      .quotes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+                margin-top: 10px; }
+      @media (max-width: 700px) { .quotes { grid-template-columns: 1fr; } }
+      .quote { padding: 10px 12px; border-radius: 6px; background: #f6f6f6;
+               border-left: 3px solid #ccc; font-size: 13px; }
+      .quote.supports { border-left-color: #34d399; }
+      .quote.refutes  { border-left-color: #f87171; }
+      .quote .stance { font-size: 10px; font-weight: 700; text-transform: uppercase;
+                       letter-spacing: 0.05em; margin-bottom: 4px; }
+      .quote .stance.supports { color: #16a34a; }
+      .quote .stance.refutes  { color: #dc2626; }
+      .quote .quote-text { font-style: italic; margin-bottom: 6px; line-height: 1.4; }
+      .quote .quote-source { font-size: 11px; color: #555; word-break: break-all; }
+      .gap-pills { margin-top: 8px; font-size: 11px; color: #666; }
+      .gap-pill { display: inline-block; padding: 2px 8px; margin: 0 4px 4px 0;
+                  border-radius: 10px; background: #fee; color: #c00;
+                  border: 1px solid #fcc; font-family: ui-monospace, monospace;
+                  font-size: 10px; }
+      .counts { font-size: 11px; color: #777; margin-top: 6px;
+                font-family: ui-monospace, monospace; }
+      @media print {
+        body { padding: 20px; background: white; }
+        .hyp-card { box-shadow: none; }
+      }
+    """
+    title = research_ctx.get("client_brand_name") if research_ctx else state.batch_id
+    north_star = (research_ctx or {}).get("north_star", "")
+    parts: List[str] = [
+        f"<!doctype html><html><head><meta charset='utf-8'>",
+        f"<title>Synthesis Report — {_h.escape(title)}</title>",
+        f"<style>{css}</style></head><body>",
+        f"<h1>Synthesis Report — {_h.escape(title)}</h1>",
+    ]
+    if north_star:
+        parts.append(
+            f"<div style='font-size:15px; color:#444; margin-bottom:6px;'>"
+            f"<em>Research intent:</em> {_h.escape(north_star)}</div>"
+        )
+    parts.append(
+        f"<div class='meta'>batch_id={_h.escape(state.batch_id)} · "
+        f"status={state.status} · "
+        f"generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</div>"
+    )
+
+    # Manifest context block
+    if research_ctx:
+        parts.append("<div class='ctx-card'><h3 style='margin:0 0 8px 0; font-size:14px;'>Manifest context</h3>")
+        for label, key in (
+            ("Brand", "client_brand_name"),
+            ("Competitors", "competitors"),
+            ("Geo hints", "geo_hints"),
+            ("Target cohorts", "target_cohorts"),
+            ("Life triggers", "life_triggers"),
+            ("Brand attributes", "brand_attributes"),
+        ):
+            val = research_ctx.get(key)
+            if isinstance(val, list):
+                val_str = ", ".join(str(v) for v in val) if val else "—"
+            else:
+                val_str = str(val or "—")
+            parts.append(
+                f"<div class='ctx-row'><span class='ctx-label'>{label}:</span> "
+                f"<span>{_h.escape(val_str)}</span></div>"
+            )
+        parts.append("</div>")
+
+    if not by_cp:
+        parts.append("<p><em>No synthesis output found. Did you run the batch with "
+                     "<code>enable_synthesis=true</code>?</em></p>")
+    for cp_id, hyps in by_cp.items():
+        cp_stmt = state.core_problems.get(cp_id, "")
+        parts.append(
+            f"<h2>{_h.escape(cp_id)} — {_h.escape(cp_stmt[:160])}</h2>"
+        )
+        for h in hyps:
+            s = h["synthesis"]
+            vc = h["verdict_counts"]
+            parts.append("<div class='hyp-card'>")
+            parts.append(
+                f"<div class='hyp-id'>{_h.escape(h['hypothesis_id'])}</div>"
+                f"<div class='hyp-statement'>{_h.escape(h['statement'])}</div>"
+                f"<div class='verdict-summary'>{_h.escape(s.get('verdict_summary',''))}</div>"
+                f"<div class='synthesis-paragraph'>{_h.escape(s.get('synthesis_paragraph',''))}</div>"
+                f"<div class='counts'>supports={vc.get('supports',0)} · "
+                f"refutes={vc.get('refutes',0)} · "
+                f"tangential={vc.get('tangential',0)} · "
+                f"llm_used={s.get('llm_used', False)}</div>"
+            )
+            # Strongest quotes
+            sq = s.get("strongest_support")
+            rq = s.get("strongest_refute")
+            if sq or rq:
+                parts.append("<div class='quotes'>")
+                for q, stance in ((sq, "supports"), (rq, "refutes")):
+                    if not q or not q.get("quote"):
+                        continue
+                    label = "Strongest support" if stance == "supports" else "Strongest refutation"
+                    parts.append(
+                        f"<div class='quote {stance}'>"
+                        f"<div class='stance {stance}'>{label} · "
+                        f"score {q.get('relevance_score',0):.2f}</div>"
+                        f"<div class='quote-text'>\"{_h.escape(q.get('quote',''))}\"</div>"
+                        f"<div class='quote-source'>"
+                        f"<a href='{_h.escape(q.get('source_url',''))}' target='_blank' rel='noopener'>"
+                        f"{_h.escape((q.get('source_title') or q.get('source_url',''))[:120])}</a>"
+                        f"</div></div>"
+                    )
+                parts.append("</div>")
+            # Coverage gaps
+            gaps = s.get("evidence_gaps") or []
+            if gaps:
+                parts.append("<div class='gap-pills'>Coverage gaps: ")
+                for g in gaps[:10]:
+                    parts.append(f"<span class='gap-pill'>{_h.escape(g)}</span>")
+                parts.append("</div>")
+            parts.append("</div>")
+    parts.append("</body></html>")
+    return "".join(parts)
 
 
 @app.get("/api/data-selection/batch/{batch_id}/results.json")

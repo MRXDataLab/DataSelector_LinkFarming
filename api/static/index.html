@@ -514,6 +514,22 @@
   .batch-row .verdict-pill.r { color: var(--refutes); }
   .batch-row .verdict-pill.t { color: var(--tangential); }
   .batch-row .elapsed { color: var(--text-faint); font-family: ui-monospace, monospace; }
+  /* Per-stage progress chip (task #70) — 8 dots, L0..L7 */
+  .stage-strip {
+    display: inline-flex; gap: 2px; align-items: center;
+    margin-left: 6px;
+    font-family: ui-monospace, monospace; font-size: 9px;
+  }
+  .stage-strip .stage-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border);
+    transition: background 0.15s, transform 0.15s;
+  }
+  .stage-strip .stage-dot.active    { background: var(--teal); transform: scale(1.3); }
+  .stage-strip .stage-dot.completed { background: var(--supports); }
+  .stage-strip .stage-label {
+    color: var(--text-faint); margin-left: 4px;
+  }
   /* Phase 1.5 — live per-channel link counters under each batch row */
   .batch-row .ch-chips {
     grid-column: 2 / -1;
@@ -785,6 +801,31 @@
 
   <!-- ── BATCH UPLOAD SECTION ──────────────────────────────────────────── -->
   <!-- ── PHASE 2 — Manifest JSON upload ─────────────────────────────────── -->
+  <!-- First-time UX hint (dismissible, persists via localStorage) -->
+  <div id="first-time-hint" style="
+       display: none; margin: 8px 0 18px 0; padding: 14px 18px;
+       background: linear-gradient(120deg, rgba(45,212,191,0.08), rgba(45,212,191,0.02));
+       border: 1px solid var(--teal-dim); border-radius: 8px;
+       font-size: 13px; line-height: 1.55; color: var(--text);">
+    <div style="display: flex; gap: 12px; align-items: start;">
+      <div style="font-size: 24px;">👋</div>
+      <div style="flex: 1;">
+        <div style="font-weight: 700; color: var(--teal); margin-bottom: 4px;">New here?</div>
+        <div>
+          Upload your <code>Full_Manifest_*.json</code> below, enter your brand name,
+          and (optionally) tick <strong>Generate synthesis</strong> for analyst-grade
+          per-hypothesis paragraphs. The pipeline runs <strong>L0 → L7</strong> in the
+          background; watch the per-row stage dots tick across as each hypothesis
+          progresses. You can download <strong>partial CSV / Synthesis HTML</strong>
+          at any time — no need to wait for the full batch.
+        </div>
+      </div>
+      <button id="first-time-hint-dismiss" type="button" style="
+        background: transparent; border: none; color: var(--text-faint);
+        font-size: 18px; cursor: pointer; padding: 0 6px;">×</button>
+    </div>
+  </div>
+
   <details id="manifest-section" class="batch-section" open>
     <summary>
       <span>🧭 Upload Full Manifest JSON — auto-extracts brand context, competitors, cohorts, life-triggers</span>
@@ -1027,8 +1068,17 @@
       </div>
 
       <div id="batch-running" hidden>
-        <h2 style="margin-top: 18px;">Batch progress
+        <h2 style="margin-top: 18px; display: flex; align-items: center; gap: 12px;">
+          <span>Batch progress</span>
           <span class="count" id="batch-event-count"></span>
+          <button id="batch-cancel-btn" type="button" hidden style="
+            margin-left: auto; padding: 4px 12px;
+            background: rgba(248,113,113,0.15); color: var(--refutes);
+            border: 1px solid var(--refutes); border-radius: 4px;
+            font-size: 11px; cursor: pointer;"
+            title="Stop the batch — queued/running members will be marked skipped, completed ones keep their results">
+            ⊘ Cancel batch
+          </button>
         </h2>
         <div id="batch-meta" style="color: var(--text-faint); font-size: 11px; margin-bottom: 10px; font-family: ui-monospace, monospace;"></div>
 
@@ -1075,6 +1125,10 @@
              title="Full nested batch JSON — core_problem → hypothesis → grouped links">
             ⬇ JSON
           </a>
+          <a id="batch-download-synthesis" class="download-btn primary" href="#" target="_blank"
+             title="Printable HTML synthesis report — one card per hypothesis with verdict + paragraph + strongest quotes. Open in browser, Cmd+P to PDF.">
+            📋 Synthesis Report (HTML)
+          </a>
         </div>
         <!-- Partial download bar (shown while batch is still running) -->
         <div id="batch-partial-bar" class="download-bar" hidden style="
@@ -1094,6 +1148,10 @@
           <a id="batch-partial-json" class="download-btn" href="#" download
              title="Partial batch JSON of members done so far">
             ⬇ Partial JSON
+          </a>
+          <a id="batch-partial-synthesis" class="download-btn" href="#" target="_blank"
+             title="Synthesis HTML report for members done so far">
+            📋 Partial Synthesis Report
           </a>
         </div>
       </div>
@@ -2231,6 +2289,8 @@ $("batch-start").addEventListener("click", async () => {
         if (hypId && stage) {
           const row = document.querySelector(`[data-hyp-id="${CSS.escape(hypId)}"] .hyp-stage`);
           if (row) row.textContent = (kind === "stage_done" ? "✓ " : "→ ") + stage;
+          // Per-stage progress strip — colour the matching dot
+          updateStageStrip(hypId, stage, kind);
         }
       }
 
@@ -2253,6 +2313,8 @@ $("batch-start").addEventListener("click", async () => {
 
       // Terminal
       if (kind === "batch_complete" || kind === "stream_end") {
+        // Hide cancel button — batch reached terminal
+        const _cb = $("batch-cancel-btn"); if (_cb) _cb.hidden = true;
         es.close();
         currentBatchEventSource = null;
         // Final refresh of batch status to ensure all members fully populated
@@ -2266,6 +2328,7 @@ $("batch-start").addEventListener("click", async () => {
         $("batch-download-discovered").href = `${API}/batch/${batch.batch_id}/discovered.csv?wait=true`;
         $("batch-download-csv-raw").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true&raw=true`;
         $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
+        $("batch-download-synthesis").href = `${API}/batch/${batch.batch_id}/synthesis.html`;
         $("batch-download-bar").hidden = false;
 
         // Empty-result quota warning — surface if EVERY member returned 0 verdicts
@@ -2302,6 +2365,30 @@ function updateBatchAggregateStats() {
   updatePartialDownloadBar(done);
 }
 
+// Per-stage progress strip (task #70). Listens to L0→L7 stage_start /
+// stage_done events. Each emit either highlights the active dot (active)
+// or marks it green (completed). Stages we don't have dots for (L4_geo_tag,
+// L5.5_yt_enrichment, L6.5_quote_extract) just no-op.
+const STAGE_ORDER = [
+  "L0_decompose", "L1_source_select", "L2_synthesize_queries",
+  "L3_discover", "L4_geo_tag", "L5_dedup",
+  "L6_triage", "L7_synthesis",
+];
+function updateStageStrip(hypId, stage, kind) {
+  const strip = document.querySelector(`.stage-strip[data-hyp-id="${CSS.escape(hypId)}"]`);
+  if (!strip) return;
+  const dot = strip.querySelector(`[data-stage="${CSS.escape(stage)}"]`);
+  if (!dot) return;
+  if (kind === "stage_start") {
+    // Clear previous active highlight, set this one
+    strip.querySelectorAll(".stage-dot.active").forEach(d => d.classList.remove("active"));
+    dot.classList.add("active");
+  } else if (kind === "stage_done") {
+    dot.classList.remove("active");
+    dot.classList.add("completed");
+  }
+}
+
 function updatePartialDownloadBar(done) {
   const bar = $("batch-partial-bar");
   if (!bar || !currentBatchId) return;
@@ -2313,6 +2400,8 @@ function updatePartialDownloadBar(done) {
     $("batch-partial-csv").href = `${API}/batch/${currentBatchId}/results.csv?partial=true`;
     $("batch-partial-discovered").href = `${API}/batch/${currentBatchId}/discovered.csv?partial=true`;
     $("batch-partial-json").href = `${API}/batch/${currentBatchId}/results.json?partial=true&download=1`;
+    const psr = $("batch-partial-synthesis");
+    if (psr) psr.href = `${API}/batch/${currentBatchId}/synthesis.html?partial=true`;
   } else {
     bar.hidden = true;
   }
@@ -2349,7 +2438,19 @@ function renderBatchTable(status) {
       ? `<span class="verdict-pill s">S${vc.supports||0}</span>
          <span class="verdict-pill r">R${vc.refutes||0}</span>
          <span class="verdict-pill t">T${vc.tangential||0}</span>`
-      : `<span class="hyp-stage" style="color: var(--text-faint); font-size: 11px;">—</span>`;
+      : `<span class="hyp-stage-wrap">
+           <span class="stage-strip" data-hyp-id="${escapeHtml(m.hypothesis_id)}">
+             <span class="stage-dot" data-stage="L0_decompose"></span>
+             <span class="stage-dot" data-stage="L1_source_select"></span>
+             <span class="stage-dot" data-stage="L2_synthesize_queries"></span>
+             <span class="stage-dot" data-stage="L3_discover"></span>
+             <span class="stage-dot" data-stage="L4_geo_tag"></span>
+             <span class="stage-dot" data-stage="L5_dedup"></span>
+             <span class="stage-dot" data-stage="L6_triage"></span>
+             <span class="stage-dot" data-stage="L7_synthesis"></span>
+             <span class="stage-label hyp-stage">—</span>
+           </span>
+         </span>`;
     const elapsed = m.elapsed_sec != null ? `${m.elapsed_sec.toFixed(1)}s` : "—";
 
     row.innerHTML = `
@@ -2414,6 +2515,26 @@ async function subscribeBatchEvents(batch) {
   batchEventCount = 0;
   $("batch-event-count").textContent = "";
 
+  // Show + wire the cancel button (hidden again at terminal events below)
+  const cancelBtn = $("batch-cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.hidden = false;
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = "⊘ Cancel batch";
+    cancelBtn.onclick = async () => {
+      if (!confirm("Cancel this batch? Queued + running members will be marked skipped.\n\nCompleted members keep their results — you can still download those.")) return;
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = "Cancelling…";
+      try {
+        await fetch(`${API}/batch/${batch.batch_id}/cancel`, {method: "POST"});
+      } catch (e) {
+        alert("Cancel failed: " + e.message);
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = "⊘ Cancel batch";
+      }
+    };
+  }
+
   try {
     const status = await (await fetch(`${API}/batch/${batch.batch_id}`)).json();
     batchMembers = status.members;
@@ -2464,6 +2585,8 @@ async function subscribeBatchEvents(batch) {
         if (hypId && stage) {
           const row = document.querySelector(`[data-hyp-id="${CSS.escape(hypId)}"] .hyp-stage`);
           if (row) row.textContent = (kind === "stage_done" ? "✓ " : "→ ") + stage;
+          // Per-stage progress strip — colour the matching dot
+          updateStageStrip(hypId, stage, kind);
         }
       }
       if (kind === "channel_discovered") {
@@ -2482,6 +2605,8 @@ async function subscribeBatchEvents(batch) {
         }
       }
       if (kind === "batch_complete" || kind === "stream_end") {
+        // Hide cancel button — batch reached terminal
+        const _cb = $("batch-cancel-btn"); if (_cb) _cb.hidden = true;
         es.close();
         currentBatchEventSource = null;
         try {
@@ -2494,6 +2619,7 @@ async function subscribeBatchEvents(batch) {
         $("batch-download-discovered").href = `${API}/batch/${batch.batch_id}/discovered.csv?wait=true`;
         $("batch-download-csv-raw").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true&raw=true`;
         $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
+        $("batch-download-synthesis").href = `${API}/batch/${batch.batch_id}/synthesis.html`;
         $("batch-download-bar").hidden = false;
         try {
           const allZero = batchMembers.every(m => {
@@ -2662,6 +2788,19 @@ async function loadMemberIntoGrid(member) {
   // Scroll the results grid into view
   document.getElementById("results-area").scrollIntoView({behavior: "smooth", block: "start"});
 }
+// First-time UX hint — show unless previously dismissed
+(function() {
+  const KEY = "outtlyr.firstTimeHintDismissed";
+  const hint = document.getElementById("first-time-hint");
+  if (!hint) return;
+  if (!localStorage.getItem(KEY)) {
+    hint.style.display = "block";
+  }
+  document.getElementById("first-time-hint-dismiss")?.addEventListener("click", () => {
+    localStorage.setItem(KEY, "1");
+    hint.style.display = "none";
+  });
+})();
 </script>
 </body>
 </html>
