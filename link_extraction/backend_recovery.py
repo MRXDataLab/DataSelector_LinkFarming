@@ -67,8 +67,11 @@ async def _probe_backend(backend_id: str) -> bool:
             h = get_headless()
             if not h.available:
                 return False
-            out = await h.search(PROBE_QUERY_TEXT, vertical="web", count=1)
-            return len(out) > 0
+            # Use the dedicated human-like probe path (homepage warm-up +
+            # consent dismissal + typed query) rather than the synthetic
+            # `/search?q=test` deeplink, which is itself a giveaway
+            # signature. See HeadlessGoogleBackend.probe().
+            return await h.probe()
     except Exception as e:
         log.info("recovery probe %s failed: %s", backend_id, e)
         return False

@@ -79,6 +79,23 @@ _HOST_GAP_JITTER_MAX = 2.5
 _DWELL_MIN_MS = 4000
 _DWELL_MAX_MS = 7000
 
+# Innocuous, high-volume queries used by the recovery probe. Picked at
+# random per probe so we don't repeat the same string twice in a row —
+# repeating "test" 50 times is itself a bot signature. These are queries
+# Google sees billions of times a day from real users, so they blend in.
+_PROBE_QUERIES: list[str] = [
+    "weather today",
+    "news today",
+    "current time",
+    "best restaurants nearby",
+    "how to make coffee",
+    "wikipedia",
+    "youtube",
+    "translate english to spanish",
+    "what is the time in london",
+    "stock market today",
+]
+
 
 class HeadlessGoogleBackend(SearchBackend):
     """Singleton — one browser, one cooldown clock, one per-host pacing table."""
@@ -279,6 +296,217 @@ class HeadlessGoogleBackend(SearchBackend):
                 log.warning("Headless _search_inner crashed, resetting ctx: %s", e)
                 await self._reset_context()
                 return []
+
+    async def probe(self) -> bool:
+        """Less-bot-like health probe for the recovery loop.
+
+        Instead of going straight to ``/search?q=test`` (which is a
+        textbook bot signature — no referrer, no cookies, no homepage
+        visit, 4-char throwaway query), we simulate a human's actual
+        navigation pattern:
+
+          1. Land on ``google.com/`` and let the page settle.
+          2. Dismiss the EU consent banner if it appears.
+          3. Dwell + jitter the mouse — buys 2-4s of "reading" time.
+          4. Focus the real search box, *type* a realistic query with
+             per-keystroke delay, then press Enter — emulates the user
+             flow rather than a synthetic GET.
+          5. Wait for the SERP to render, then verify we have organic
+             results.
+
+        Any CAPTCHA detected along the way is treated identically to
+        the search path: enter cooldown, reset the Chromium context.
+        Returns True only on a clean SERP with ≥1 result.
+        """
+        if not self.available:
+            return False
+        if self._in_cooldown():
+            log.debug("Headless probe — in cooldown, skipping")
+            return False
+
+        assert HeadlessGoogleBackend._semaphore is not None
+        async with HeadlessGoogleBackend._semaphore:
+            await self._wait_for_host_slot("google.com")
+            try:
+                return await self._probe_inner()
+            except Exception as e:
+                log.warning("Headless probe crashed, resetting ctx: %s", e)
+                await self._reset_context()
+                return False
+
+    async def _probe_inner(self) -> bool:
+        """Human-like probe — homepage → consent → dwell → typed search."""
+        ctx = await self._get_context()
+        page = await ctx.new_page()
+        try:
+            # ── Step 1 — homepage visit (the bit that makes the eventual
+            # /search request look like a referred navigation, not a
+            # cold deeplink).
+            try:
+                await page.goto(
+                    "https://www.google.com/",
+                    wait_until="domcontentloaded",
+                    timeout=15000,
+                )
+            except Exception as e:
+                log.warning("Headless probe: homepage goto failed: %s", e)
+                return False
+
+            # Early CAPTCHA check — Google sometimes serves /sorry/
+            # straight off the homepage when an IP is heavily flagged.
+            if await self._captcha_short_circuit(page, where="homepage"):
+                return False
+
+            # ── Step 2 — dismiss consent banner (EU/global rollout).
+            # The dialog selectors vary by region; try a small set.
+            await self._dismiss_consent(page)
+
+            # ── Step 3 — dwell + mouse noise. Human reading time before
+            # any action is taken.
+            await page.wait_for_timeout(random.randint(1500, 3500))
+            try:
+                await page.mouse.move(
+                    random.randint(200, 800), random.randint(100, 400),
+                )
+                await page.mouse.move(
+                    random.randint(200, 800), random.randint(100, 400),
+                    steps=random.randint(8, 20),
+                )
+            except Exception:
+                pass
+
+            # ── Step 4 — type a realistic query into the search box and
+            # submit via Enter. Falls back to URL navigation if the box
+            # selector isn't found (DOM markup occasionally shifts).
+            realistic_q = random.choice(_PROBE_QUERIES)
+            try:
+                box = await page.query_selector(
+                    'textarea[name="q"], input[name="q"]'
+                )
+                if box:
+                    await box.click()
+                    await page.wait_for_timeout(random.randint(300, 800))
+                    await box.type(
+                        realistic_q,
+                        delay=random.randint(80, 180),  # per-keystroke ms
+                    )
+                    await page.wait_for_timeout(random.randint(400, 900))
+                    await box.press("Enter")
+                else:
+                    log.debug(
+                        "Headless probe: search box not found, "
+                        "falling back to /search?q=%s", realistic_q,
+                    )
+                    await page.goto(
+                        f"https://www.google.com/search?q={quote_plus(realistic_q)}",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+            except Exception as e:
+                log.warning("Headless probe: search submission failed: %s", e)
+                return False
+
+            # ── Step 5 — wait for SERP. The selectors below match both
+            # the modern and the legacy Google result containers.
+            try:
+                await page.wait_for_selector(
+                    "div.g, div.tF2Cxc, #search", timeout=10000,
+                )
+            except Exception:
+                pass
+
+            # Post-search CAPTCHA check.
+            if await self._captcha_short_circuit(page, where="post-search"):
+                return False
+
+            # ── Step 6 — count organic results. A real SERP has ≥1 item.
+            items = await page.query_selector_all("div.g, div.tF2Cxc")
+            ok = len(items) > 0
+            if ok:
+                backend_health.report(
+                    "headless_google", "ok",
+                    message=(
+                        f"probe ok: {len(items)} results for {realistic_q!r}"
+                    ),
+                )
+                log.info(
+                    "Headless Google probe succeeded — %d results for %r",
+                    len(items), realistic_q,
+                )
+            return ok
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def _captcha_short_circuit(self, page: Any, *, where: str) -> bool:
+        """If `page` is showing CAPTCHA or `/sorry/`, enter cooldown +
+        reset the context, and return True. Otherwise return False.
+
+        Used by `_probe_inner` at multiple checkpoints so the bot-wall
+        gets caught early without forcing the caller to repeat boilerplate.
+        """
+        try:
+            content = await page.content()
+        except Exception:
+            return False
+        if (
+            "captcha" in content.lower()
+            or "unusual traffic" in content.lower()
+            or "/sorry/" in (page.url or "")
+        ):
+            log.warning(
+                "Headless probe: CAPTCHA detected at %s (url=%s)",
+                where, (page.url or "")[:120],
+            )
+            self._enter_cooldown()
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await self._reset_context()
+            log.info(
+                "Headless Google context reset after CAPTCHA — next "
+                "probe will use fresh fingerprint + clean cookies"
+            )
+            return True
+        return False
+
+    async def _dismiss_consent(self, page: Any) -> None:
+        """Click through Google's cookie / consent dialog if present.
+
+        The dialog appears for new-IP / no-cookie sessions in many
+        regions. There are multiple selector variants — try a few in
+        order. Silent best-effort; not finding the dialog is fine
+        (most US users won't see one).
+        """
+        consent_selectors = [
+            # Modern dialog — visible label is "Accept all" or local
+            # equivalent; aria-label often spells the action explicitly.
+            'button[aria-label*="Accept" i]',
+            'button[aria-label*="agree" i]',
+            # Text-based selectors as a fallback (Playwright extension).
+            'button:has-text("Accept all")',
+            'button:has-text("I agree")',
+            'button:has-text("Accept")',
+            # Generic dialog button — last-resort, matches anything that
+            # looks like a primary action inside a modal.
+            'div[role="dialog"] button',
+        ]
+        for sel in consent_selectors:
+            try:
+                btn = await page.query_selector(sel)
+                if btn:
+                    await btn.click()
+                    await page.wait_for_timeout(random.randint(400, 900))
+                    log.info(
+                        "Headless probe: dismissed consent banner via %r",
+                        sel,
+                    )
+                    return
+            except Exception:
+                continue
 
     # ── private ────────────────────────────────────────────────────────────
 
