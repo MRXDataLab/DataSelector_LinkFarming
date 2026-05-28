@@ -1258,6 +1258,7 @@ def _build_deduped_batch_csv(
 @app.get("/api/data-selection/batch/{batch_id}/results.csv")
 async def batch_results_csv(
     batch_id: str, wait: bool = False, raw: bool = False,
+    partial: bool = False,
 ) -> Response:
     """Aggregated CSV across every hypothesis in the batch.
 
@@ -1269,6 +1270,12 @@ async def batch_results_csv(
     `?raw=true` → legacy view: one row per (link, hypothesis-that-found-it).
     Same link found by 3 hypotheses produces 3 rows. Useful for debugging
     or for joining back to per-hypothesis state.
+
+    `?partial=true` → bypass the "batch not done yet" 409 and return CSV
+    for whatever members have already completed. Lets analysts salvage
+    value from a stuck/slow batch without waiting for the full set.
+    Filename gets a `_partial_<done>of<total>` suffix so the file isn't
+    confused with the final export.
     """
     state = get_batch(batch_id)
     if state is None:
@@ -1276,6 +1283,8 @@ async def batch_results_csv(
     if state.status not in ("done", "error", "partial"):
         if wait:
             state = await await_batch_completion(batch_id, timeout=3600)
+        elif partial:
+            pass  # serve what we have
         else:
             raise HTTPException(409, f"batch not done yet (status={state.status})")
 
@@ -1306,7 +1315,14 @@ async def batch_results_csv(
         suffix = "deduped"
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}_{suffix}.csv"
+    partial_tag = ""
+    if state.status == "running":
+        done = sum(1 for m in state.members if m.status == "done")
+        partial_tag = f"_partial_{done}of{len(state.members)}"
+    filename = (
+        f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}"
+        f"_{suffix}{partial_tag}.csv"
+    )
     return Response(
         content=csv_text,
         media_type="text/csv; charset=utf-8",
@@ -1317,6 +1333,7 @@ async def batch_results_csv(
 @app.get("/api/data-selection/batch/{batch_id}/discovered.csv")
 async def batch_discovered_csv(
     batch_id: str, wait: bool = False, raw: bool = False,
+    partial: bool = False,
 ) -> Response:
     """Aggregated CSV of every DISCOVERED link in the batch (pre-triage cut).
 
@@ -1332,6 +1349,8 @@ async def batch_discovered_csv(
     if state.status not in ("done", "error", "partial"):
         if wait:
             state = await await_batch_completion(batch_id, timeout=3600)
+        elif partial:
+            pass  # serve what's done so far
         else:
             raise HTTPException(409, f"batch not done yet (status={state.status})")
 
@@ -1361,7 +1380,14 @@ async def batch_discovered_csv(
         suffix = "discovered_deduped"
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}_{suffix}.csv"
+    partial_tag = ""
+    if state.status == "running":
+        done = sum(1 for m in state.members if m.status == "done")
+        partial_tag = f"_partial_{done}of{len(state.members)}"
+    filename = (
+        f"outtlyr_batch_{_safe_filename(state.batch_id, ts)}"
+        f"_{suffix}{partial_tag}.csv"
+    )
     return Response(
         content=csv_text,
         media_type="text/csv; charset=utf-8",
@@ -1372,14 +1398,22 @@ async def batch_discovered_csv(
 @app.get("/api/data-selection/batch/{batch_id}/results.json")
 async def batch_results_json(
     batch_id: str, wait: bool = False, download: bool = False,
+    partial: bool = False,
 ) -> Response:
-    """Full batch result JSON — nested by core problem → hypothesis → grouped links."""
+    """Full batch result JSON — nested by core problem → hypothesis → grouped links.
+
+    `?partial=true` includes members whose status is anything (done, error,
+    running, queued). Members without job_id or completed results are
+    emitted with empty link lists so the file still parses cleanly.
+    """
     state = get_batch(batch_id)
     if state is None:
         raise HTTPException(404, f"unknown batch_id: {batch_id}")
     if state.status not in ("done", "error", "partial"):
         if wait:
             state = await await_batch_completion(batch_id, timeout=3600)
+        elif partial:
+            pass
         else:
             raise HTTPException(409, f"batch not done yet (status={state.status})")
 

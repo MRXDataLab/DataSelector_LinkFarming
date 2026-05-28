@@ -1076,6 +1076,26 @@
             ⬇ JSON
           </a>
         </div>
+        <!-- Partial download bar (shown while batch is still running) -->
+        <div id="batch-partial-bar" class="download-bar" hidden style="
+             border-top: 1px dashed #f0b429; padding-top: 10px; margin-top: 10px;">
+          <div style="width: 100%; font-size: 11px; color: #f0b429; margin-bottom: 6px;">
+            ⚠ Batch still running — download what's done so far
+            (<span id="batch-partial-progress">0/0</span> members complete)
+          </div>
+          <a id="batch-partial-csv" class="download-btn" href="#" download
+             title="Deduped triaged CSV of members done so far">
+            ⬇ Partial Triaged CSV
+          </a>
+          <a id="batch-partial-discovered" class="download-btn" href="#" download
+             title="Deduped discovered CSV of members done so far">
+            📥 Partial Discovered CSV
+          </a>
+          <a id="batch-partial-json" class="download-btn" href="#" download
+             title="Partial batch JSON of members done so far">
+            ⬇ Partial JSON
+          </a>
+        </div>
       </div>
     </div>
   </details>
@@ -2278,6 +2298,24 @@ function updateBatchAggregateStats() {
   $("batch-stat-s").textContent = sum_s;
   $("batch-stat-r").textContent = sum_r;
   $("batch-stat-t").textContent = sum_t;
+  // Partial-download bar — visible while batch is still progressing
+  updatePartialDownloadBar(done);
+}
+
+function updatePartialDownloadBar(done) {
+  const bar = $("batch-partial-bar");
+  if (!bar || !currentBatchId) return;
+  // Show only while batch is running AND at least one member has completed
+  const stillRunning = !($("batch-download-bar") && !$("batch-download-bar").hidden);
+  if (stillRunning && done > 0) {
+    bar.hidden = false;
+    $("batch-partial-progress").textContent = `${done}/${batchMembers.length}`;
+    $("batch-partial-csv").href = `${API}/batch/${currentBatchId}/results.csv?partial=true`;
+    $("batch-partial-discovered").href = `${API}/batch/${currentBatchId}/discovered.csv?partial=true`;
+    $("batch-partial-json").href = `${API}/batch/${currentBatchId}/results.json?partial=true&download=1`;
+  } else {
+    bar.hidden = true;
+  }
 }
 
 function renderBatchTable(status) {
