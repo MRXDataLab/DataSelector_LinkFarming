@@ -58,7 +58,15 @@ def _build_payload(
     temperature: float,
     max_tokens: int,
 ) -> Dict[str, Any]:
-    """Build the Gemini generateContent request body for Vertex."""
+    """Build the Gemini generateContent request body for Vertex.
+
+    Phase 3 fix — Gemini 2.5 Flash defaults to "dynamic thinking", which
+    consumes maxOutputTokens before producing any visible output. With a
+    300-token cap (quote extractor) Gemini was spending ~290 on thinking
+    and emitting truncated JSON like `'{\\n  "quote": "",'`. We force
+    `thinkingBudget=0` to disable thinking entirely, so the full budget
+    goes to actual output. (Use 1024+ if we ever need deep reasoning.)
+    """
     body: Dict[str, Any] = {
         "contents": [
             {"role": "user", "parts": [{"text": user_prompt}]}
@@ -66,6 +74,8 @@ def _build_payload(
         "generationConfig": {
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
+            # Phase 3 — disable thinking so output budget isn't burned.
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     if system_prompt:

@@ -21,6 +21,7 @@ import re
 from typing import List, Optional
 
 from ..backends import get_brave, search_with_fallback
+from ..backends.registry import get_ddg, get_headless
 from ..models import DiscoveredLink, TimeWindow, TypedQuery
 from ._common import raw_result_to_link
 from .base import Discoverer
@@ -60,9 +61,17 @@ class GoogleWebDiscoverer(Discoverer):
     channel_id = "google_web"
 
     def __init__(self) -> None:
-        # We're available as long as ONE of Brave / DDG / headless is configured.
-        # `search_with_fallback` handles the routing per preferences.
-        self.available = get_brave().available  # most common gate
+        # Available if ANY web-search backend is up. `search_with_fallback`
+        # handles per-call routing per backend preferences + health, so
+        # being available here just means "at least one path to results
+        # exists." Previously this only checked Brave — when Brave's
+        # monthly quota was exhausted, google_web returned [] silently
+        # even though DDG / headless were healthy. (Phase 1 fix.)
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,

@@ -26,6 +26,8 @@ ChannelId = Literal[
     "substack",
     "trends",
     "marketplace",
+    "scholar",       # Phase 1.6 — Google Scholar (academic citations)
+    "google_maps",   # Phase 1.6 — Google Maps local-pack (place reviews)
 ]
 
 CHANNEL_IDS: tuple[str, ...] = (
@@ -42,13 +44,17 @@ CHANNEL_IDS: tuple[str, ...] = (
     "substack",
     "trends",
     "marketplace",
+    # Phase 1.6 — free-tier maximisation: Scholar (academic) + Google Maps
+    # local-pack (brick-and-mortar reviews).
+    "scholar",
+    "google_maps",
 )
 
 SHORT_VIDEO_CHANNELS: tuple[str, ...] = ("youtube_shorts", "tiktok", "instagram_reels")
 
 # ─── Query archetypes (see build plan §C) ────────────────────────────────────
 
-Archetype = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9]
+Archetype = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 ARCHETYPE_NAMES: Dict[int, str] = {
     1: "entity_pain",
@@ -60,9 +66,18 @@ ARCHETYPE_NAMES: Dict[int, str] = {
     7: "expert_authority",
     8: "crisis_event",
     9: "hashtag_trend",
+    # Close-proxy expansion: geo + category + competitor combinations
+    # that surface the same audience signal without the brand name.
+    # E.g. "Brigade Builders" → "Bengaluru luxury apartment" (proxy for
+    # the same buyer audience). Critical for broad discovery on
+    # branded hypotheses where the brand has thin direct coverage.
+    10: "proxy_search",
 }
 
-QueryVertical = Literal["web", "news", "forums", "videos", "paa", "related", "shopping"]
+QueryVertical = Literal[
+    "web", "news", "forums", "videos", "paa", "related", "shopping",
+    "scholar", "local",  # Phase 1.6 — Google Scholar + Google Maps local-pack
+]
 WindowLabel = Literal["7d", "30d", "90d", "1y", "5y", "custom"]
 Verdict = Literal["supports", "refutes", "tangential"]
 

@@ -131,9 +131,13 @@ class TikTokDiscoverer(ShortVideoDiscoverer):
 
     def __init__(self, strict_videos_only: bool = False) -> None:
         self.strict_videos_only = strict_videos_only
-        # Requires Brave (primary search tier). Headless could substitute but
-        # is reserved for PAA / true emergencies, not steady-state TikTok queries.
-        self.available = get_brave().available
+        # Phase 1 fix: `site:tiktok.com` works on any web-search backend.
+        from ..backends.registry import get_ddg, get_headless
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,

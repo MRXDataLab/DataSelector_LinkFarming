@@ -26,9 +26,14 @@ class NewsDiscoverer(Discoverer):
     channel_id = "news"
 
     def __init__(self) -> None:
-        # Brave is the primary news source; without it we can't run at all
-        # (headless's `news` vertical works in theory but is CAPTCHA-flaky).
-        self.available = get_brave().available
+        # Phase 1 fix: DDG also exposes a news vertical, headless can scrape
+        # Google News. Be available if ANY of them is up.
+        from ..backends.registry import get_ddg, get_headless
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,
@@ -36,8 +41,11 @@ class NewsDiscoverer(Discoverer):
         window: TimeWindow,
         count: int = 10,
     ) -> List[DiscoveredLink]:
-        if not get_brave().available:
-            return []
+        # Phase 1.6 — let `search_with_fallback` route through Brave news →
+        # DDG news → headless Google News based on backend health. The
+        # previous hard gate `if not get_brave().available: return []` killed
+        # this channel entirely when Brave 402'd, even though DDG + headless
+        # both expose news verticals.
         raw = await search_with_fallback(
             query.text,
             vertical="news",

@@ -17,6 +17,7 @@ from urllib.parse import quote_plus
 
 import requests
 
+from .. import backend_health
 from ..models import QueryVertical, RawResult, TimeWindow
 from ..temporal import to_brave_params
 from .base import SearchBackend
@@ -55,6 +56,18 @@ class BraveBackend(SearchBackend):
     def __init__(self, api_key: Optional[str] = None) -> None:
         self.api_key = api_key or os.getenv("BRAVE_API_KEY", "")
         self.available = bool(self.api_key)
+        # Report initial health state so the UI shows missing-key
+        # before any search is fired.
+        if not self.available:
+            backend_health.report(
+                "brave", "missing_key",
+                message="BRAVE_API_KEY env var not set",
+            )
+        else:
+            backend_health.report(
+                "brave", "ok",
+                message="API key configured; no calls yet",
+            )
 
     async def search(
         self,
@@ -85,10 +98,16 @@ class BraveBackend(SearchBackend):
 
         try:
             if vertical == "news":
-                return self._news(query, count, freshness, headers)
-            if vertical == "videos":
-                return self._videos(query, count, headers)
-            return self._web(query, vertical, count, freshness, headers)
+                results = self._news(query, count, freshness, headers)
+            elif vertical == "videos":
+                results = self._videos(query, count, headers)
+            else:
+                results = self._web(query, vertical, count, freshness, headers)
+            backend_health.report(
+                "brave", "ok",
+                message=f"{vertical}: {len(results)} results",
+            )
+            return results
         except requests.HTTPError as e:
             code = e.response.status_code
             # 402 Payment Required = free-tier monthly quota exhausted.
@@ -97,11 +116,36 @@ class BraveBackend(SearchBackend):
             hint = ""
             if code == 402:
                 hint = " — Brave free-tier MONTHLY quota exhausted; upgrade plan or switch backend"
+                # Quota is monthly — block for 1 hour, then re-probe.
+                # If the operator upgrades the plan mid-session a fresh
+                # call will refresh health to ok on first success.
+                backend_health.report(
+                    "brave", "quota_exhausted",
+                    message=f"HTTP 402 on {vertical} query{hint}",
+                    cooldown_seconds=3600,
+                    extra={"http_code": 402, "vertical": vertical},
+                )
             elif code == 429:
                 hint = " — Brave rate-limited; slow request rate"
+                backend_health.report(
+                    "brave", "rate_limited",
+                    message=f"HTTP 429 on {vertical} query",
+                    cooldown_seconds=60,
+                    extra={"http_code": 429, "vertical": vertical},
+                )
+            else:
+                backend_health.report(
+                    "brave", "unavailable",
+                    message=f"HTTP {code} on {vertical}",
+                    extra={"http_code": code},
+                )
             log.warning("Brave %s HTTP %s for %r%s", vertical, code, query[:60], hint)
             return []
         except Exception as e:
+            backend_health.report(
+                "brave", "unavailable",
+                message=f"{type(e).__name__}: {e}",
+            )
             log.warning("Brave %s failed for %r: %s", vertical, query[:60], e)
             return []
 

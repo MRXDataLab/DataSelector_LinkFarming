@@ -222,6 +222,33 @@
   .verdict-badge.supports { background: rgba(52,211,153,0.15); color: var(--supports); }
   .verdict-badge.refutes { background: rgba(248,113,113,0.15); color: var(--refutes); }
   .verdict-badge.tangential { background: rgba(148,163,184,0.15); color: var(--tangential); }
+  .verdict-badge.unclassified { background: rgba(240,180,41,0.15); color: #f0b429; }
+
+  /* Channel-grouped view (discovery-only mode) */
+  .channel-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px;
+  }
+  .channel-col h3 {
+    font-size: 13px; font-weight: 700; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .channel-col h3 .badge {
+    background: var(--bg-card); border: 1px solid var(--border);
+    padding: 1px 6px; border-radius: 8px; font-size: 11px;
+    font-weight: 400;
+  }
+  .channel-col h3 .ch-status {
+    font-size: 10px; font-weight: 400; padding: 1px 6px; border-radius: 4px;
+  }
+  .channel-col h3 .ch-status.ok { background: rgba(52,211,153,0.15); color: var(--supports); }
+  .channel-col h3 .ch-status.empty { background: rgba(248,113,113,0.15); color: var(--refutes); }
+  .channel-col h3 .ch-status.skipped { background: rgba(148,163,184,0.15); color: var(--tangential); }
+  .discovery-banner {
+    background: linear-gradient(90deg, rgba(240,180,41,0.1), transparent);
+    border: 1px solid rgba(240,180,41,0.3); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 16px;
+    font-size: 12px; color: #f0b429;
+  }
   .confidence {
     font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-dim);
   }
@@ -327,6 +354,87 @@
     color: var(--teal);
   }
   .drop-zone input[type="file"] { display: none; }
+
+  /* Phase 2 — manifest context grid */
+  .manifest-context-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+    margin-top: 8px;
+  }
+  @media (max-width: 900px) { .manifest-context-grid { grid-template-columns: 1fr; } }
+  .ctx-block label {
+    display: block; font-size: 12px; font-weight: 600;
+    margin-bottom: 3px; color: var(--text);
+  }
+  .ctx-block .ctx-hint {
+    font-weight: 400; color: var(--text-faint); font-size: 10px;
+  }
+  .ctx-block textarea {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text);
+    border-radius: 4px; font-family: ui-monospace, monospace;
+    font-size: 12px; resize: vertical;
+  }
+  .ctx-readonly {
+    padding: 6px 8px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px;
+    font-family: ui-monospace, monospace; font-size: 12px;
+    color: var(--text-dim); min-height: 36px;
+  }
+
+  /* Phase 3 — per-hypothesis synthesis card */
+  .synthesis-card {
+    background: linear-gradient(120deg, rgba(45,212,191,0.07), rgba(45,212,191,0.02));
+    border: 1px solid var(--teal-dim);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 20px;
+  }
+  .synthesis-summary {
+    font-size: 16px; font-weight: 700;
+    color: var(--teal); margin-bottom: 8px;
+  }
+  .synthesis-paragraph {
+    font-size: 14px; line-height: 1.5;
+    color: var(--text); margin-bottom: 12px;
+  }
+  .synthesis-quotes {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+    margin-top: 8px;
+  }
+  @media (max-width: 900px) { .synthesis-quotes { grid-template-columns: 1fr; } }
+  .synthesis-quote {
+    padding: 10px 12px; border-radius: 6px;
+    background: var(--bg-card); border-left: 3px solid var(--text-faint);
+  }
+  .synthesis-quote.supports { border-left-color: var(--supports); }
+  .synthesis-quote.refutes  { border-left-color: var(--refutes); }
+  .synthesis-quote .stance {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 4px;
+  }
+  .synthesis-quote .stance.supports { color: var(--supports); }
+  .synthesis-quote .stance.refutes  { color: var(--refutes); }
+  .synthesis-quote .quote-text {
+    font-size: 13px; line-height: 1.4;
+    color: var(--text); font-style: italic;
+    margin-bottom: 6px;
+  }
+  .synthesis-quote .quote-source {
+    font-size: 11px; color: var(--text-faint);
+    font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .synthesis-quote .quote-source a { color: var(--teal); text-decoration: none; }
+  .synthesis-quote .quote-source a:hover { text-decoration: underline; }
+  .synthesis-gaps {
+    margin-top: 10px; font-size: 11px; color: var(--text-faint);
+  }
+  .synthesis-gaps .gap-pill {
+    display: inline-block; padding: 1px 7px; margin: 0 4px 4px 0;
+    border-radius: 10px; background: rgba(248,113,113,0.10);
+    color: #fca5a5; border: 1px solid rgba(248,113,113,0.30);
+    font-family: ui-monospace, monospace; font-size: 10px;
+  }
   .drop-zone .filename {
     color: var(--teal); font-family: ui-monospace, monospace;
     font-size: 12px; margin-top: 6px;
@@ -406,6 +514,22 @@
   .batch-row .verdict-pill.r { color: var(--refutes); }
   .batch-row .verdict-pill.t { color: var(--tangential); }
   .batch-row .elapsed { color: var(--text-faint); font-family: ui-monospace, monospace; }
+  /* Phase 1.5 — live per-channel link counters under each batch row */
+  .batch-row .ch-chips {
+    grid-column: 2 / -1;
+    margin-top: 4px;
+    display: flex; gap: 4px; flex-wrap: wrap;
+    font-size: 10px; font-family: ui-monospace, monospace;
+  }
+  .ch-chip {
+    padding: 1px 6px; border-radius: 3px;
+    border: 1px solid var(--border); background: var(--bg-card);
+    color: var(--text-dim);
+  }
+  .ch-chip.has-links  { color: var(--supports); border-color: var(--teal-dim); }
+  .ch-chip.zero-links { color: #f0b429; border-color: #f0b429; opacity: 0.7; }
+  .ch-chip.skipped    { color: var(--text-faint); text-decoration: line-through; }
+  .ch-chip .lk { font-weight: 700; }
 
   .batch-aggregate {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
@@ -479,6 +603,70 @@
   .cost-pill .v { color: var(--teal); font-weight: 600; }
   .cost-pill.over { color: var(--refutes); border-color: var(--refutes); }
   .cost-pill.over .v { color: var(--refutes); }
+
+  /* Backend-health pills (Phase 1 diagnostic surface) */
+  .backend-health-bar {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    padding: 6px 10px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11px; font-family: ui-monospace, monospace;
+  }
+  .backend-health-bar .bh-label {
+    color: var(--text-faint); margin-right: 4px;
+  }
+  .backend-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg-card);
+    cursor: help;
+  }
+  .backend-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-faint);
+  }
+  .backend-pill.ok       { color: var(--supports); border-color: var(--teal-dim); }
+  .backend-pill.ok .dot  { background: var(--supports); }
+  .backend-pill.blocked  { color: var(--refutes); border-color: var(--refutes); }
+  .backend-pill.blocked .dot { background: var(--refutes); }
+  .backend-pill.warn     { color: #f0b429; border-color: #f0b429; }
+  .backend-pill.warn .dot { background: #f0b429; }
+  .backend-pill.idle     { color: var(--text-dim); }
+  .backend-pill .cooldown {
+    font-size: 10px; color: var(--text-faint); margin-left: 2px;
+  }
+
+  /* Backend-exhausted banner (Phase 1.5) — shown when any backend is in a
+     hard-blocked state, with a one-line hint on what to do. */
+  .backend-banner {
+    display: none;  /* JS flips to block when needed */
+    margin: 8px 0 0 0;
+    padding: 10px 14px;
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    border-radius: 6px;
+    color: #fca5a5;
+    font-size: 12px;
+    font-family: ui-monospace, monospace;
+    line-height: 1.5;
+  }
+  .backend-banner.warn {
+    background: rgba(240, 180, 41, 0.10);
+    border-color: rgba(240, 180, 41, 0.50);
+    color: #f0b429;
+  }
+  .backend-banner h4 {
+    margin: 0 0 4px 0;
+    font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .backend-banner ul {
+    margin: 4px 0 0 0; padding-left: 18px;
+  }
+  .backend-banner li { margin-bottom: 2px; }
+  .backend-banner code {
+    background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 3px;
+  }
 
   /* Change #1 — backend toggles */
   .backend-toggles {
@@ -571,7 +759,14 @@
     <h1>Outtlyr · <span class="accent">Data Selection</span></h1>
     <div class="pipeline">L0 decompose → L1 score → L2 synth → L3 discover → L5 dedup → L6 triage → L7 emit</div>
   </div>
-  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+  <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+    <div id="backend-health" class="backend-health-bar" title="Live backend health — auto-refreshes every 8s">
+      <span class="bh-label">backends:</span>
+      <span class="backend-pill idle" data-backend="brave"><span class="dot"></span>brave</span>
+      <span class="backend-pill idle" data-backend="duckduckgo"><span class="dot"></span>ddg</span>
+      <span class="backend-pill idle" data-backend="headless_google"><span class="dot"></span>google</span>
+      <span class="backend-pill idle" data-backend="youtube"><span class="dot"></span>yt</span>
+    </div>
     <div id="cost-pill" class="cost-pill" hidden>
       <span>last run:</span>
       <span class="v" id="cost-pill-usd">$0.0000</span>
@@ -582,7 +777,152 @@
 </header>
 
 <main>
+  <!-- Backend-exhausted banner (Phase 1.5) — flipped by renderBackendHealth -->
+  <div id="backend-banner" class="backend-banner">
+    <h4 id="backend-banner-title">Backend issues detected</h4>
+    <div id="backend-banner-body"></div>
+  </div>
+
   <!-- ── BATCH UPLOAD SECTION ──────────────────────────────────────────── -->
+  <!-- ── PHASE 2 — Manifest JSON upload ─────────────────────────────────── -->
+  <details id="manifest-section" class="batch-section" open>
+    <summary>
+      <span>🧭 Upload Full Manifest JSON — auto-extracts brand context, competitors, cohorts, life-triggers</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="body">
+      <label class="drop-zone" id="manifest-drop-zone">
+        <div style="font-size: 14px; color: var(--text);">
+          Drag a <code>Full_Manifest_*.json</code> here, or
+          <span style="color: var(--teal); text-decoration: underline;">click to browse</span>
+        </div>
+        <div class="hint">
+          The manifest carries your conversation transcript, dimensional priors,
+          volunteered context (competitors, price benchmark, cohorts), and the
+          full hypothesis set. We extract the structured fields and use them
+          to enrich every query.
+        </div>
+        <div class="filename" id="manifest-filename"></div>
+        <input type="file" id="manifest-input" accept=".json,application/json" />
+      </label>
+
+      <!-- Preview / edit context block — populated by /manifest/preview -->
+      <div id="manifest-preview" hidden style="margin-top: 14px;">
+        <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+          <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px;">
+            <div>
+              <label for="client-brand-name" style="font-weight: 600;">Your brand name <span style="color: var(--refutes);">*</span></label>
+              <div style="color: var(--text-faint); font-size: 11px; margin-bottom: 4px;">
+                The manifest doesn't include your brand name (you're the client). Type it here.
+              </div>
+              <input id="client-brand-name" type="text" placeholder="e.g. Brigade Group" style="width: 280px;" />
+            </div>
+            <div style="flex: 1; color: var(--text-dim); font-size: 11px; padding-top: 22px;">
+              <span id="manifest-meta"></span>
+            </div>
+          </div>
+
+          <div class="manifest-context-grid">
+            <div class="ctx-block">
+              <label>Competitors <span class="ctx-hint">(edit if missed)</span></label>
+              <textarea id="ctx-competitors" rows="2" placeholder="One per line"></textarea>
+            </div>
+            <div class="ctx-block">
+              <label>Geo hints</label>
+              <textarea id="ctx-geo" rows="2" placeholder="india, bengaluru, ..."></textarea>
+            </div>
+            <div class="ctx-block">
+              <label>Target cohorts</label>
+              <textarea id="ctx-cohorts" rows="2"></textarea>
+            </div>
+            <div class="ctx-block">
+              <label>Life triggers</label>
+              <textarea id="ctx-triggers" rows="2"></textarea>
+            </div>
+            <div class="ctx-block">
+              <label>Brand attributes <span class="ctx-hint">(read-only)</span></label>
+              <div id="ctx-brand-attrs" class="ctx-readonly"></div>
+            </div>
+            <div class="ctx-block">
+              <label>Price / regulatory anchors <span class="ctx-hint">(read-only)</span></label>
+              <div id="ctx-anchors" class="ctx-readonly"></div>
+            </div>
+          </div>
+
+          <div style="margin-top: 12px;">
+            <strong>Hypotheses extracted:</strong>
+            <span id="manifest-hyp-count" style="color: var(--teal);">0</span>
+            across
+            <span id="manifest-cp-count" style="color: var(--teal);">0</span>
+            core problems
+            <details style="display:inline; margin-left:8px;">
+              <summary style="display:inline; color: var(--text-faint); cursor: pointer; font-size:12px;">show list</summary>
+              <div id="manifest-cp-list" style="margin-top: 8px; max-height: 200px; overflow-y: auto; font-size: 12px; padding-left: 12px; border-left: 2px solid var(--border);"></div>
+            </details>
+          </div>
+
+          <!-- Run controls (mirror of batch controls) -->
+          <div class="batch-controls" style="margin-top: 14px;">
+            <div>
+              <label for="manifest-window">Time window</label>
+              <select id="manifest-window">
+                <option value="7d">7 days</option>
+                <option value="30d">30 days</option>
+                <option value="90d">90 days</option>
+                <option value="1y" selected>1 year</option>
+                <option value="5y">5 years</option>
+              </select>
+            </div>
+            <div>
+              <label for="manifest-max-triage">Triage budget (per hyp)</label>
+              <input id="manifest-max-triage" type="number" value="30" min="1" max="100" />
+            </div>
+            <div>
+              <label for="manifest-concurrency">Concurrency</label>
+              <input id="manifest-concurrency" type="number" value="3" min="1" max="10" />
+            </div>
+            <div>
+              <label for="manifest-strictness">Triage strictness</label>
+              <select id="manifest-strictness">
+                <option value="strict">Strict</option>
+                <option value="balanced">Balanced</option>
+                <option value="liberal" selected>Liberal</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top: 10px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="manifest-use-llm" checked style="width: auto;" />
+              <span style="font-size: 12px;">Use LLM (Gemini) for slot-fill + verdicts</span>
+            </label>
+          </div>
+          <div style="margin-top: 8px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #1a2332; border: 1px solid #f0b429; border-radius: 6px; padding: 8px 12px;">
+              <input type="checkbox" id="manifest-skip-triage" style="width: auto;" />
+              <span style="font-weight: 600; color: #f0b429; font-size: 12px;">Discovery only (skip triage)</span>
+            </label>
+          </div>
+          <div style="margin-top: 8px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #1a2332; border: 1px solid var(--teal); border-radius: 6px; padding: 8px 12px;">
+              <input type="checkbox" id="manifest-enable-synthesis" style="width: auto;" />
+              <span style="font-weight: 600; color: var(--teal); font-size: 12px;">Generate synthesis (extract quotes + write per-hypothesis paragraph — uses LLM)</span>
+            </label>
+            <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
+              When ON: body-fetches every supports/refutes link, extracts a verbatim
+              evidence quote, then writes a 2-3 sentence summary citing the strongest
+              quotes. Adds ~$0.01-0.05 per hypothesis on top of triage.
+            </div>
+          </div>
+
+          <div style="height: 14px;"></div>
+          <button id="manifest-run" style="background: var(--teal); color: var(--bg);">🚀 Run manifest batch</button>
+          <span id="manifest-warn" style="margin-left: 10px; color: var(--refutes); font-size: 11px;"></span>
+        </div>
+      </div>
+    </div>
+  </details>
+
   <details id="batch-section" class="batch-section">
     <summary>
       <span>📤 Batch upload — run many hypotheses from one CSV</span>
@@ -639,6 +979,15 @@
           <input type="checkbox" id="batch-use-llm" checked style="width: auto;" />
           <span style="font-size: 12px;">Use LLM (Gemini) for slot-fill + verdicts</span>
         </label>
+      </div>
+      <div style="margin-top: 8px;">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #1a2332; border: 1px solid #f0b429; border-radius: 6px; padding: 8px 12px;">
+          <input type="checkbox" id="batch-skip-triage" style="width: auto;" />
+          <span style="font-weight: 600; color: #f0b429; font-size: 12px;">Discovery only (skip triage)</span>
+        </label>
+        <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
+          Collect links from all channels without LLM scoring. Saves API credits.
+        </div>
       </div>
 
       <div style="margin-top: 10px;">
@@ -776,6 +1125,17 @@
         </label>
       </div>
     </div>
+    <div class="row" style="margin-top: 6px;">
+      <div>
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #1a2332; border: 1px solid #f0b429; border-radius: 6px; padding: 8px 12px;">
+          <input type="checkbox" id="skip_triage" style="width: auto;" />
+          <span style="font-weight: 600; color: #f0b429;">Discovery only (skip triage)</span>
+        </label>
+        <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
+          Collects links from ALL channels but skips LLM scoring. Saves Gemini + YouTube API credits. Results grouped by channel instead of verdict.
+        </div>
+      </div>
+    </div>
 
     <div style="margin-top: 10px;">
       <label>Search backends (priority order, top → bottom)</label>
@@ -865,6 +1225,13 @@
 
   <!-- ── RESULTS GRID ──────────────────────────────────────────────────── -->
   <section id="results-area">
+    <!-- Phase 3 — synthesis card (hidden when no synthesis output present) -->
+    <div id="synthesis-card" class="synthesis-card" hidden>
+      <div class="synthesis-summary" id="synthesis-summary"></div>
+      <div class="synthesis-paragraph" id="synthesis-paragraph"></div>
+      <div class="synthesis-quotes" id="synthesis-quotes"></div>
+      <div class="synthesis-gaps" id="synthesis-gaps"></div>
+    </div>
     <div class="geo-filter" id="geo-filter" hidden>
       <span class="geo-filter-label">Geo</span>
       <div class="geo-pill active" data-geo="all">
@@ -917,6 +1284,146 @@ fetch(`${API}/registry`).then(r => r.json()).then(d => {
     : "no discoverers available";
   pill.classList.toggle("ok", ch.length > 0);
 }).catch(() => $("registry-status").textContent = "API unreachable");
+
+// ── Backend health pills (Phase 1 diagnostic surface) ────────────────────
+// Polls /backend-health every 8s; updates pill color + cooldown countdown.
+// Hover any pill to see its full status message + success/failure counts.
+const BACKEND_LABELS = {
+  brave: "brave",
+  duckduckgo: "ddg",
+  headless_google: "google",
+  youtube: "yt",
+};
+// One-line hint per status — what the operator should do to fix it.
+const BACKEND_HINTS = {
+  quota_exhausted: "Monthly quota hit. Upgrade plan or wait for monthly reset. Other backends will be used in the meantime.",
+  rate_limited: "Too many requests. Will auto-recover after cooldown.",
+  captcha_cooldown: "Google flagged this IP. Backing off automatically. Will retry after cooldown.",
+  missing_key: (bid) => `Set <code>${bid.toUpperCase()}_API_KEY</code> in env and restart the server.`,
+  not_installed: (bid) => bid === "duckduckgo"
+    ? "Run <code>pip install ddgs</code> in the server venv and restart."
+    : bid === "headless_google"
+      ? "Run <code>pip install playwright && playwright install chromium</code> and restart."
+      : "Install the relevant package and restart.",
+  unavailable: "Backend returned an error. Check the server log for details.",
+};
+
+function renderBackendHealth(snapshot) {
+  if (!snapshot || !snapshot.backends) return;
+  const blocked = [];   // hard fail
+  const cooling = [];   // soft fail (cooldown)
+  for (const [bid, h] of Object.entries(snapshot.backends)) {
+    const pill = document.querySelector(`.backend-pill[data-backend="${bid}"]`);
+    if (!pill) continue;
+    // Classify: ok / warn (cooldown) / blocked (hard fail) / idle
+    let cls = "idle";
+    if (h.status === "ok") cls = "ok";
+    else if (h.status === "captcha_cooldown" || h.status === "rate_limited") {
+      cls = "warn";
+      cooling.push({ bid, h });
+    } else if (
+      h.status === "quota_exhausted" || h.status === "missing_key" ||
+      h.status === "not_installed" || h.status === "unavailable"
+    ) {
+      cls = "blocked";
+      blocked.push({ bid, h });
+    }
+    pill.classList.remove("ok","warn","blocked","idle");
+    pill.classList.add(cls);
+
+    // Build label: backend short name + optional cooldown countdown
+    const short = BACKEND_LABELS[bid] || bid;
+    let suffix = "";
+    if (h.cooldown_seconds_remaining > 0) {
+      const m = Math.floor(h.cooldown_seconds_remaining / 60);
+      const s = h.cooldown_seconds_remaining % 60;
+      suffix = ` <span class="cooldown">${m>0?m+"m":""}${s}s</span>`;
+    }
+    pill.innerHTML = `<span class="dot"></span>${short}${suffix}`;
+
+    // Tooltip with full detail
+    const tip = [
+      `status: ${h.status}`,
+      h.message ? `msg: ${h.message}` : null,
+      `ok: ${h.success_count}  fail: ${h.failure_count}`,
+      h.cooldown_seconds_remaining > 0
+        ? `cooldown: ${h.cooldown_seconds_remaining}s remaining`
+        : null,
+    ].filter(Boolean).join("\n");
+    pill.title = tip;
+  }
+
+  // ── Banner ── shown when any backend is hard-blocked or cooling down
+  const banner = $("backend-banner");
+  const title = $("backend-banner-title");
+  const body = $("backend-banner-body");
+  if (!banner) return;
+
+  const issues = [...blocked, ...cooling];
+  if (issues.length === 0) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "block";
+  banner.classList.toggle("warn", blocked.length === 0); // yellow only if only cooldowns
+  // Phase 1.7-E — show auto-recovery activity in the title so the user
+  // knows the system is healing itself.
+  const titleBase = blocked.length > 0
+    ? `${blocked.length} backend${blocked.length>1?"s":""} blocked${cooling.length?` · ${cooling.length} cooling down`:""}`
+    : `${cooling.length} backend${cooling.length>1?"s":""} cooling down`;
+  title.innerHTML = `${escapeHtml(titleBase)} <span style="font-weight:400; opacity:0.7; font-size:11px;">· auto-retry every 30s</span>`;
+
+  const items = issues.map(({bid, h}) => {
+    const short = BACKEND_LABELS[bid] || bid;
+    let hint = BACKEND_HINTS[h.status] || "";
+    if (typeof hint === "function") hint = hint(bid);
+    const cooldown = h.cooldown_seconds_remaining > 0
+      ? ` (auto-retry in ${Math.floor(h.cooldown_seconds_remaining/60)}m${h.cooldown_seconds_remaining%60}s)`
+      : "";
+    return `<li><strong>${short}</strong> — ${h.status}${cooldown}: ${hint}<br><span style="opacity:0.7; font-size:11px;">${escapeHtml(h.message || "")}</span></li>`;
+  }).join("");
+  body.innerHTML = `<ul>${items}</ul>`;
+}
+function fetchBackendHealth() {
+  fetch(`${API}/backend-health`)
+    .then(r => r.json())
+    .then(renderBackendHealth)
+    .catch(() => {});  // network blip — keep last-known pill state
+}
+fetchBackendHealth();
+setInterval(fetchBackendHealth, 5000);
+
+// Phase 1.7-E — client-side countdown tick. The server snapshot we
+// cache in `_lastHealthSnapshot` carries `cooldown_seconds_remaining`
+// at fetch time; every second we re-render with a freshly-decremented
+// remaining count so the pills + banner show a live countdown without
+// hammering the server.
+let _lastHealthSnapshot = null;
+let _lastFetchEpoch = 0;
+const origRender = renderBackendHealth;
+renderBackendHealth = function(snap) {
+  if (snap && snap.backends) {
+    _lastHealthSnapshot = snap;
+    _lastFetchEpoch = Date.now() / 1000;
+  }
+  origRender(snap);
+};
+function tickCountdowns() {
+  if (!_lastHealthSnapshot) return;
+  const elapsed = Math.floor(Date.now() / 1000 - _lastFetchEpoch);
+  const decremented = {
+    ...(_lastHealthSnapshot),
+    backends: Object.fromEntries(
+      Object.entries(_lastHealthSnapshot.backends).map(([bid, h]) => [bid, {
+        ...h,
+        cooldown_seconds_remaining: Math.max(0,
+          (h.cooldown_seconds_remaining || 0) - elapsed),
+      }])
+    ),
+  };
+  origRender(decremented);
+}
+setInterval(tickCountdowns, 1000);
 
 // ── Sample hypothesis loader ──────────────────────────────────────────────
 let SAMPLES = [];
@@ -1010,6 +1517,7 @@ $("start").addEventListener("click", async () => {
         max_triage: parseInt($("max_triage").value) || 30,
         triage_strictness: $("triage_strictness").value,
         backends: getEnabledBackends(),
+        skip_triage: $("skip_triage").checked,
       }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -1119,6 +1627,49 @@ $("start").addEventListener("click", async () => {
 });
 
 // ── Render verdict cards ─────────────────────────────────────────────────
+// Phase 3 — render the per-hypothesis synthesis card. Hidden when the
+// pipeline ran without synthesis (skip_synthesis=True or skip_triage=True).
+function renderSynthesisCard(synthesis, quotesByUrl) {
+  const card = $("synthesis-card");
+  if (!card) return;
+  if (!synthesis || !synthesis.verdict_summary) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $("synthesis-summary").textContent = synthesis.verdict_summary;
+  $("synthesis-paragraph").textContent = synthesis.synthesis_paragraph || "";
+
+  // Strongest support + refute quotes (the LLM-picked headlines)
+  const qContainer = $("synthesis-quotes");
+  qContainer.innerHTML = "";
+  for (const stance of ["strongest_support", "strongest_refute"]) {
+    const q = synthesis[stance];
+    if (!q || !q.quote) continue;
+    const stanceClass = stance === "strongest_support" ? "supports" : "refutes";
+    const stanceLabel = stance === "strongest_support" ? "Strongest support" : "Strongest refutation";
+    const card = document.createElement("div");
+    card.className = `synthesis-quote ${stanceClass}`;
+    card.innerHTML = `
+      <div class="stance ${stanceClass}">${stanceLabel} · score ${(q.relevance_score||0).toFixed(2)}</div>
+      <div class="quote-text">"${escapeHtml(q.quote)}"</div>
+      <div class="quote-source">
+        <a href="${escapeHtml(q.source_url)}" target="_blank" rel="noopener">${escapeHtml(q.source_title || q.source_url)}</a>
+      </div>
+    `;
+    qContainer.appendChild(card);
+  }
+
+  // Coverage gap pills
+  const gapsEl = $("synthesis-gaps");
+  if (synthesis.evidence_gaps && synthesis.evidence_gaps.length > 0) {
+    gapsEl.innerHTML = "Coverage gaps: " + synthesis.evidence_gaps
+      .map(g => `<span class="gap-pill">${escapeHtml(g)}</span>`).join("");
+  } else {
+    gapsEl.innerHTML = "";
+  }
+}
+
 async function loadResults(jobId) {
   const r = await fetch(`${API}/jobs/${jobId}/results?wait=true`);
   if (!r.ok) {
@@ -1128,10 +1679,24 @@ async function loadResults(jobId) {
   }
   const data = await r.json();
 
+  // Phase 3 — render the synthesis card if present
+  renderSynthesisCard(data.synthesis, data.quotes_by_url);
+
+  const isDiscoveryOnly = !!(data.grouped.unclassified && data.grouped.unclassified.length > 0
+    && !(data.grouped.supports || []).length
+    && !(data.grouped.refutes || []).length
+    && !(data.grouped.tangential || []).length);
+
   // Stats
-  $("stat-supports").textContent = data.verdict_counts.supports;
-  $("stat-refutes").textContent = data.verdict_counts.refutes;
-  $("stat-tangential").textContent = data.verdict_counts.tangential;
+  if (isDiscoveryOnly) {
+    $("stat-supports").textContent = "-";
+    $("stat-refutes").textContent = "-";
+    $("stat-tangential").textContent = (data.grouped.unclassified || []).length + " discovered";
+  } else {
+    $("stat-supports").textContent = data.verdict_counts.supports;
+    $("stat-refutes").textContent = data.verdict_counts.refutes;
+    $("stat-tangential").textContent = data.verdict_counts.tangential;
+  }
   $("stat-elapsed").textContent = data.elapsed_sec.toFixed(1) + "s";
 
   // Step 14 — cost pill
@@ -1145,37 +1710,117 @@ async function loadResults(jobId) {
     $("cost-pill").classList.toggle("over", !!cost.hit_cap);
   }
 
-  // Download buttons — point them at the server endpoints w/ wait=true so
-  // the user can click immediately even if results are still being
-  // serialized server-side. ?download=1 sets Content-Disposition.
+  // Download buttons
   $("download-csv").href = `${API}/jobs/${jobId}/results.csv?wait=true`;
   $("download-all-csv").href = `${API}/jobs/${jobId}/discovered.csv?wait=true`;
   $("download-json").href = `${API}/jobs/${jobId}/results?wait=true&download=1`;
   $("download-bar").hidden = false;
 
-  // Per-verdict columns
-  ["supports","refutes","tangential"].forEach(verdict => {
-    const list = $(`${verdict}-list`);
-    const badge = $(`${verdict}-badge`);
-    const items = data.grouped[verdict] || [];
-    badge.textContent = items.length;
-    list.innerHTML = "";
-    if (items.length === 0) {
+  if (isDiscoveryOnly) {
+    // ── DISCOVERY-ONLY: group links by channel ──
+    const verdictGrid = document.querySelector(".verdict-grid");
+    verdictGrid.innerHTML = "";
+
+    // Banner
+    const banner = document.createElement("div");
+    banner.className = "discovery-banner";
+    const totalDisc = (data.grouped.unclassified || []).length;
+    const chUsed = data.channels_used || [];
+    const chSkipped = data.channels_skipped || [];
+    banner.innerHTML = `<strong>Discovery-only mode</strong> — ${totalDisc} links collected from ${chUsed.length} channels. `
+      + `Triage skipped. ${chSkipped.length ? `<span style="color: var(--refutes);">${chSkipped.length} channel(s) skipped.</span>` : ""}`;
+    verdictGrid.appendChild(banner);
+
+    // Group by channel
+    const byChannel = {};
+    for (const lk of (data.grouped.unclassified || [])) {
+      const ch = lk.channel || "unknown";
+      if (!byChannel[ch]) byChannel[ch] = [];
+      byChannel[ch].push(lk);
+    }
+    // Sort channels by link count descending
+    const sortedChannels = Object.keys(byChannel).sort((a, b) => byChannel[b].length - byChannel[a].length);
+
+    const grid = document.createElement("div");
+    grid.className = "channel-grid";
+    for (const ch of sortedChannels) {
+      const col = document.createElement("div");
+      col.className = "channel-col";
+      const n = byChannel[ch].length;
+      col.innerHTML = `<h3><span class="ch-status ok">OK</span> ${escapeHtml(ch)} <span class="badge">${n}</span></h3>`;
+      byChannel[ch].forEach(lk => col.appendChild(cardForLink(lk)));
+      grid.appendChild(col);
+    }
+    // Show skipped channels
+    for (const ch of chSkipped) {
+      if (byChannel[ch]) continue;
+      const col = document.createElement("div");
+      col.className = "channel-col";
+      col.innerHTML = `<h3><span class="ch-status skipped">SKIP</span> ${escapeHtml(ch)} <span class="badge">0</span></h3>`;
       const empty = document.createElement("div");
       empty.className = "empty-bucket";
-      empty.textContent = "no evidence in this bucket";
-      list.appendChild(empty);
-      return;
+      empty.textContent = "channel skipped (no discoverer / unavailable)";
+      col.appendChild(empty);
+      grid.appendChild(col);
     }
-    items.forEach(link => list.appendChild(cardForLink(link)));
-  });
+    // Show channels that ran but returned 0
+    for (const ch of chUsed) {
+      if (byChannel[ch] || chSkipped.includes(ch)) continue;
+      const col = document.createElement("div");
+      col.className = "channel-col";
+      col.innerHTML = `<h3><span class="ch-status empty">EMPTY</span> ${escapeHtml(ch)} <span class="badge">0</span></h3>`;
+      const empty = document.createElement("div");
+      empty.className = "empty-bucket";
+      empty.textContent = "ran but returned 0 results — check backend health";
+      col.appendChild(empty);
+      grid.appendChild(col);
+    }
+    verdictGrid.appendChild(grid);
+  } else {
+    // ── NORMAL MODE: per-verdict columns ──
+    // Restore verdict columns structure if it was replaced by discovery-only view
+    const verdictGrid = document.querySelector(".verdict-grid");
+    if (!$("supports-list")) {
+      verdictGrid.innerHTML = `
+        <div class="verdict-col supports">
+          <h3>● Supports <span class="badge" id="supports-badge">0</span></h3>
+          <div id="supports-list"></div>
+        </div>
+        <div class="verdict-col refutes">
+          <h3>● Refutes <span class="badge" id="refutes-badge">0</span></h3>
+          <div id="refutes-list"></div>
+        </div>
+        <div class="verdict-col tangential">
+          <h3>● Tangential <span class="badge" id="tangential-badge">0</span></h3>
+          <div id="tangential-list"></div>
+        </div>
+      `;
+    }
+    ["supports","refutes","tangential"].forEach(verdict => {
+      const list = $(`${verdict}-list`);
+      const badge = $(`${verdict}-badge`);
+      const items = data.grouped[verdict] || [];
+      badge.textContent = items.length;
+      list.innerHTML = "";
+      if (items.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty-bucket";
+        empty.textContent = "no evidence in this bucket";
+        list.appendChild(empty);
+        return;
+      }
+      items.forEach(link => list.appendChild(cardForLink(link)));
+    });
+  }
 
   // Geo filter pill counts (India vs ROW)
-  const allLinks = [
-    ...(data.grouped.supports || []),
-    ...(data.grouped.refutes || []),
-    ...(data.grouped.tangential || []),
-  ];
+  const allLinks = isDiscoveryOnly
+    ? (data.grouped.unclassified || [])
+    : [
+      ...(data.grouped.supports || []),
+      ...(data.grouped.refutes || []),
+      ...(data.grouped.tangential || []),
+    ];
   const counts = { all: allLinks.length, india: 0, row: 0, unknown: 0 };
   for (const lk of allLinks) {
     const g = lk.geo_scope || "unknown";
@@ -1494,6 +2139,7 @@ $("batch-start").addEventListener("click", async () => {
         concurrency: parseInt($("batch-concurrency").value) || 3,
         triage_strictness: $("batch-strictness").value,
         backends: getBatchEnabledBackends(),
+        skip_triage: $("batch-skip-triage").checked,
       }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -1565,6 +2211,23 @@ $("batch-start").addEventListener("click", async () => {
         if (hypId && stage) {
           const row = document.querySelector(`[data-hyp-id="${CSS.escape(hypId)}"] .hyp-stage`);
           if (row) row.textContent = (kind === "stage_done" ? "✓ " : "→ ") + stage;
+        }
+      }
+
+      // Phase 1.5 — live per-channel link counters under each batch row
+      if (kind === "channel_discovered") {
+        const hypId = data.hypothesis_id;
+        const m = batchMembers.find(m => m.hypothesis_id === hypId);
+        if (m) {
+          m.channel_counts = m.channel_counts || {};
+          const d = data.data || {};
+          m.channel_counts[d.channel] = {
+            n_links: d.n_links || 0,
+            n_queries_run: d.n_queries_run || 0,
+            skipped: !!d.skipped,
+            reason: d.reason || "",
+          };
+          renderBatchRowChips(m);
         }
       }
 
@@ -1659,10 +2322,286 @@ function renderBatchTable(status) {
       <div class="verdict-pills">${verdicts}</div>
       <div style="color: var(--text-faint); font-family: ui-monospace,monospace; font-size: 11px;">t=${m.max_triage}</div>
       <div class="elapsed">${elapsed}</div>
+      <div class="ch-chips"></div>
     `;
     row.addEventListener("click", () => loadMemberIntoGrid(m));
     tbl.appendChild(row);
+    // Render any channel counts we've accumulated for this member
+    renderBatchRowChips(m);
   }
+}
+
+// Live per-channel link counter chips under a batch row (Phase 1.5).
+// Called both on initial render and on every channel_discovered event so
+// the user sees marketplace:0 reddit:5 google_web:3 ... fill in live.
+function renderBatchRowChips(m) {
+  if (!m.channel_counts || Object.keys(m.channel_counts).length === 0) return;
+  const row = document.querySelector(`[data-hyp-id="${CSS.escape(m.hypothesis_id)}"]`);
+  if (!row) return;
+  const slot = row.querySelector(".ch-chips");
+  if (!slot) return;
+  // Sort: channels with links first (desc), then 0-links, then skipped.
+  const entries = Object.entries(m.channel_counts).sort((a, b) => {
+    const [, A] = a, [, B] = b;
+    const sA = A.skipped ? 2 : (A.n_links > 0 ? 0 : 1);
+    const sB = B.skipped ? 2 : (B.n_links > 0 ? 0 : 1);
+    if (sA !== sB) return sA - sB;
+    return (B.n_links || 0) - (A.n_links || 0);
+  });
+  slot.innerHTML = entries.map(([ch, info]) => {
+    let cls = "ch-chip";
+    if (info.skipped) cls += " skipped";
+    else if (info.n_links > 0) cls += " has-links";
+    else cls += " zero-links";
+    const tip = info.skipped
+      ? `skipped: ${info.reason || "unavailable"}`
+      : `${info.n_links} link${info.n_links !== 1 ? "s" : ""} from ${info.n_queries_run} quer${info.n_queries_run !== 1 ? "ies" : "y"}`;
+    return `<span class="${cls}" title="${escapeHtml(tip)}">${escapeHtml(ch)}<span class="lk"> ${info.n_links}</span>${info.skipped ? " ⊘" : ""}</span>`;
+  }).join("");
+}
+
+// ─── Phase 2 — Manifest JSON upload + preview + start ────────────────────
+let _manifestState = null;  // {raw_manifest_json, extracted_context, ...}
+
+// Reusable SSE subscription for any batch_id (CSV or manifest path).
+// Mirrors the CSV start handler's inline subscribe block — the manifest
+// path calls this once /manifest/start returns a batch_id, so we avoid
+// duplicating ~100 lines of event-stream wiring.
+async function subscribeBatchEvents(batch) {
+  // Mirror CSV path's hydrate + render
+  $("batch-running").hidden = false;
+  $("batch-meta").textContent =
+    `batch_id=${batch.batch_id}  members=${batch.member_count}  ` +
+    `core_problems=${batch.core_problem_count}  concurrency=${batch.concurrency}`;
+  batchEventCount = 0;
+  $("batch-event-count").textContent = "";
+
+  try {
+    const status = await (await fetch(`${API}/batch/${batch.batch_id}`)).json();
+    batchMembers = status.members;
+    renderBatchTable(status);
+  } catch (e) {
+    console.warn("Could not hydrate batch:", e);
+  }
+
+  $("batch-download-bar").hidden = true;
+  $("batch-quota-warning").hidden = true;
+
+  if (currentBatchEventSource) currentBatchEventSource.close();
+  const es = new EventSource(`${API}/batch/${batch.batch_id}/events`);
+  currentBatchEventSource = es;
+  const knownKinds = [
+    "batch_start","member_start","pipeline_start","stage_start","stage_done",
+    "channel_discovered","pipeline_complete","pipeline_error",
+    "member_done","member_error","batch_complete","stream_end",
+  ];
+  knownKinds.forEach(kind => {
+    es.addEventListener(kind, async (e) => {
+      let data; try { data = JSON.parse(e.data); } catch { return; }
+      batchEventCount += 1;
+      $("batch-event-count").textContent = `(${batchEventCount} events)`;
+
+      if (kind === "member_start" || kind === "member_done" || kind === "member_error") {
+        const hypId = data.hypothesis_id;
+        const m = batchMembers.find(m => m.hypothesis_id === hypId);
+        if (m) {
+          if (kind === "member_start") m.status = "running";
+          if (kind === "member_done") {
+            m.status = data.data?.status || "done";
+            if (data.data?.verdict_counts) m.verdict_counts = data.data.verdict_counts;
+            if (data.data?.elapsed_sec) m.elapsed_sec = data.data.elapsed_sec;
+            m.error = data.data?.error || null;
+          }
+          if (kind === "member_error") {
+            m.status = "error";
+            m.error = data.data?.error;
+          }
+          updateBatchAggregateStats();
+          renderBatchTable({members: batchMembers});
+        }
+      }
+      if (kind === "stage_start" || kind === "stage_done") {
+        const hypId = data.hypothesis_id;
+        const stage = data.stage;
+        if (hypId && stage) {
+          const row = document.querySelector(`[data-hyp-id="${CSS.escape(hypId)}"] .hyp-stage`);
+          if (row) row.textContent = (kind === "stage_done" ? "✓ " : "→ ") + stage;
+        }
+      }
+      if (kind === "channel_discovered") {
+        const hypId = data.hypothesis_id;
+        const m = batchMembers.find(m => m.hypothesis_id === hypId);
+        if (m) {
+          m.channel_counts = m.channel_counts || {};
+          const d = data.data || {};
+          m.channel_counts[d.channel] = {
+            n_links: d.n_links || 0,
+            n_queries_run: d.n_queries_run || 0,
+            skipped: !!d.skipped,
+            reason: d.reason || "",
+          };
+          renderBatchRowChips(m);
+        }
+      }
+      if (kind === "batch_complete" || kind === "stream_end") {
+        es.close();
+        currentBatchEventSource = null;
+        try {
+          const final = await (await fetch(`${API}/batch/${batch.batch_id}`)).json();
+          batchMembers = final.members;
+          renderBatchTable(final);
+          updateBatchAggregateStats();
+        } catch {}
+        $("batch-download-csv").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true`;
+        $("batch-download-discovered").href = `${API}/batch/${batch.batch_id}/discovered.csv?wait=true`;
+        $("batch-download-csv-raw").href = `${API}/batch/${batch.batch_id}/results.csv?wait=true&raw=true`;
+        $("batch-download-json").href = `${API}/batch/${batch.batch_id}/results.json?wait=true&download=1`;
+        $("batch-download-bar").hidden = false;
+        try {
+          const allZero = batchMembers.every(m => {
+            const vc = m.verdict_counts || {};
+            return (vc.supports||0) + (vc.refutes||0) + (vc.tangential||0) === 0;
+          });
+          $("batch-quota-warning").hidden = !allZero;
+        } catch {}
+      }
+    });
+  });
+  es.onerror = () => {};
+}
+
+const manifestDrop = $("manifest-drop-zone");
+if (manifestDrop) {
+  manifestDrop.addEventListener("dragover", e => { e.preventDefault(); manifestDrop.classList.add("over"); });
+  manifestDrop.addEventListener("dragleave", () => manifestDrop.classList.remove("over"));
+  manifestDrop.addEventListener("drop", e => {
+    e.preventDefault();
+    manifestDrop.classList.remove("over");
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleManifestUpload(file);
+  });
+}
+const manifestInput = $("manifest-input");
+if (manifestInput) {
+  manifestInput.addEventListener("change", e => {
+    const file = e.target.files?.[0];
+    if (file) handleManifestUpload(file);
+  });
+}
+
+async function handleManifestUpload(file) {
+  if (!file.name.toLowerCase().endsWith(".json")) {
+    alert("Expected a .json manifest file");
+    return;
+  }
+  $("manifest-filename").textContent = `selected: ${file.name}`;
+  const fd = new FormData();
+  fd.append("file", file);
+  let resp;
+  try {
+    const r = await fetch(`${API}/manifest/preview`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    resp = await r.json();
+  } catch (e) {
+    alert("Manifest preview failed: " + e.message);
+    return;
+  }
+  _manifestState = resp;
+  renderManifestPreview(resp);
+}
+
+function renderManifestPreview(d) {
+  $("manifest-preview").hidden = false;
+  $("manifest-meta").innerHTML =
+    `<code>${escapeHtml(d.bundle_id)}</code> · schema ${escapeHtml(d.schema_version)} · `
+    + `frozen ${escapeHtml((d.frozen_at || '').slice(0, 19))}`;
+  // North-star + essence shown as hover-tooltip? Keep compact.
+  $("manifest-hyp-count").textContent = d.hypothesis_count;
+  $("manifest-cp-count").textContent = d.core_problem_count;
+
+  const ctx = d.extracted_context || {};
+  $("ctx-competitors").value = (ctx.competitors || []).join("\n");
+  $("ctx-geo").value          = (ctx.geo_hints || []).join("\n");
+  $("ctx-cohorts").value      = (ctx.target_cohorts || []).join("\n");
+  $("ctx-triggers").value     = (ctx.life_triggers || []).join("\n");
+  $("ctx-brand-attrs").textContent = (ctx.brand_attributes || []).join(" · ") || "—";
+  $("ctx-anchors").textContent =
+    [(ctx.price_anchors||[]).join(", "), (ctx.regulatory_anchors||[]).join(", ")]
+      .filter(Boolean).join(" · ") || "—";
+
+  const cpList = $("manifest-cp-list");
+  cpList.innerHTML = (d.core_problems || []).map(cp => `
+    <div style="margin-bottom: 6px;">
+      <strong style="color: var(--teal);">${escapeHtml(cp.core_problem_id)}</strong>
+      (${cp.hypothesis_ids.length} hyps): ${escapeHtml((cp.statement || '').slice(0, 200))}
+    </div>
+  `).join("");
+}
+
+const manifestRunBtn = $("manifest-run");
+if (manifestRunBtn) {
+  manifestRunBtn.addEventListener("click", async () => {
+    if (!_manifestState) { alert("Upload a manifest first"); return; }
+    const brand = ($("client-brand-name").value || "").trim();
+    if (!brand) {
+      $("manifest-warn").textContent = "Your brand name is required.";
+      $("client-brand-name").focus();
+      return;
+    }
+    $("manifest-warn").textContent = "";
+    manifestRunBtn.disabled = true;
+    manifestRunBtn.innerHTML = '<span class="loader"></span> Starting…';
+
+    const lines = (id) => ($(id).value || "")
+      .split("\n").map(s => s.trim()).filter(Boolean);
+
+    let resp;
+    try {
+      const r = await fetch(`${API}/manifest/start`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          raw_manifest_json: _manifestState.raw_manifest_json,
+          client_brand_name: brand,
+          window_label: $("manifest-window").value,
+          use_llm: $("manifest-use-llm").checked,
+          max_triage: parseInt($("manifest-max-triage").value) || 30,
+          concurrency: parseInt($("manifest-concurrency").value) || 3,
+          triage_strictness: $("manifest-strictness").value,
+          backends: getBatchEnabledBackends ? getBatchEnabledBackends() : null,
+          skip_triage: $("manifest-skip-triage").checked,
+          enable_synthesis: $("manifest-enable-synthesis").checked,
+          max_synthesis_links: 12,
+          competitors_override: lines("ctx-competitors"),
+          geo_hints_override:   lines("ctx-geo"),
+          target_cohorts_override: lines("ctx-cohorts"),
+          life_triggers_override:  lines("ctx-triggers"),
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      resp = await r.json();
+    } catch (e) {
+      $("manifest-warn").textContent = "Start failed: " + e.message;
+      manifestRunBtn.disabled = false;
+      manifestRunBtn.textContent = "🚀 Run manifest batch";
+      return;
+    }
+    // Reuse the existing batch progress UI — set the same currentBatchId
+    // and trigger the same SSE subscription.
+    currentBatchId = resp.batch_id;
+    batchMembers = [];   // will be repopulated from /batch/{id}
+    batchEventCount = 0;
+    document.getElementById("batch-running").scrollIntoView({behavior: "smooth"});
+    // Kick off the SSE subscription that the CSV path uses
+    await subscribeBatchEvents({
+      batch_id: resp.batch_id,
+      member_count: resp.member_count,
+      core_problem_count: resp.core_problem_count,
+      concurrency: resp.concurrency,
+    });
+    manifestRunBtn.disabled = false;
+    manifestRunBtn.textContent = "🚀 Run manifest batch";
+  });
 }
 
 async function loadMemberIntoGrid(member) {

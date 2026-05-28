@@ -161,7 +161,29 @@ def _region_from_query(query: TypedQuery) -> Optional[str]:
 
 
 class YouTubeShortsDiscoverer(ShortVideoDiscoverer):
-    """YouTube Data API v3 + youtube-transcript-api driven Shorts pull."""
+    """Dual-mode YouTube Shorts discoverer.
+
+    **Modes:**
+    - ``search`` (default, FREE) — Routes through ``search_with_fallback`` to
+      headless Google → DDG → Brave video-vertical search. Returns
+      ``ShortVideoLink`` objects with URL + title + snippet + deterministic
+      thumbnail + duration parsed from snippet. **Burns zero YT API quota.**
+    - ``api`` (legacy, paid) — Uses YouTube Data API for search.list +
+      videos.list + commentThreads. Richer metadata (view counts, top
+      comments, transcript) but burns ~106 quota units per call.
+
+    **Selection logic** (in `_select_mode()`):
+    - When ``skip_triage=True`` is set on the ambient pipeline context
+      → always ``search`` mode (we don't need rich metadata for discovery).
+    - When YT API key missing → ``search`` mode (forced).
+    - When YT API in ``quota_exhausted`` health state → ``search`` mode.
+    - Otherwise default to ``search`` for discovery; the YT API path is
+      reserved for the post-L5 enrichment step (top-N triage candidates only).
+
+    This is the Phase 1.6 architecture change. Previously every call burned
+    YT API quota. Now discovery is free and YT API only fires for
+    enrichment of triage candidates (~10x quota reduction).
+    """
 
     channel_id = "youtube_shorts"
 
@@ -174,14 +196,88 @@ class YouTubeShortsDiscoverer(ShortVideoDiscoverer):
         request_timeout: int = 15,
         enable_transcripts: bool = True,
         transcript_languages: Tuple[str, ...] = ("en", "en-US", "en-IN", "hi", "hi-IN"),
+        prefer_api_mode: bool = False,
     ) -> None:
         self.api_key = api_key or os.getenv("YOUTUBE_API_KEY", "").strip()
-        self.available = bool(self.api_key)
+        # `available` now reflects whether ANY discovery path works — search
+        # mode works without a YT key, so the discoverer is always "available"
+        # as long as some web-search backend is configured. The YT-API-specific
+        # availability is captured by the `youtube` health state instead.
+        from ..backends.registry import get_brave, get_ddg, get_headless
+        self.has_api_key = bool(self.api_key)
+        self.available = (
+            self.has_api_key
+            or get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
+        # Default to search mode for cost discipline. `prefer_api_mode=True`
+        # lets callers (e.g. an enrichment-only run) force the legacy path.
+        self.prefer_api_mode = prefer_api_mode
+        # Report only the YT-API specific state to `backend_health` — the
+        # discoverer's overall `available` flag is broader (search-mode works
+        # without a YT key). The youtube pill in the UI tracks API key
+        # presence; the `youtube_shorts` channel itself is available as long
+        # as search fallback works.
+        try:
+            from .. import backend_health
+            if self.has_api_key:
+                backend_health.report(
+                    "youtube", "ok",
+                    message="YOUTUBE_API_KEY configured",
+                )
+            else:
+                backend_health.report(
+                    "youtube", "missing_key",
+                    message="YOUTUBE_API_KEY not set — search-mode only "
+                            "(headless/DDG videos vertical, no enrichment).",
+                )
+        except Exception:
+            pass  # never let telemetry break init
         self.top_n_enrichment = top_n_enrichment
         self.comments_per_video = comments_per_video
         self.request_timeout = request_timeout
         self.enable_transcripts = enable_transcripts
         self.transcript_languages = transcript_languages
+
+    # ── Mode selection (Phase 1.6) ─────────────────────────────────────────
+
+    def _select_mode(self) -> str:
+        """Pick the discovery mode ('search' or 'api').
+
+        **YT Shorts policy — API-FIRST when key is healthy.** Per the
+        locked decision "YT Shorts is the priority #1 hero channel,"
+        Shorts coverage matters more than the marginal quota saving from
+        search mode. DDG/headless-Google `videos` vertical surfaces
+        mostly long-form YouTube; only the YT Data API's
+        `videoDuration=short` filter reliably returns Shorts URLs.
+        The long-form ``YouTubeDiscoverer`` keeps the search-first
+        default (long-form has good search coverage so the API tax isn't
+        worth it).
+
+        Override env: ``OUTTLYR_YT_SHORTS_MODE=search`` forces search.
+        """
+        import os as _os
+        forced = (_os.getenv("OUTTLYR_YT_SHORTS_MODE", "") or "").strip().lower()
+        if forced in ("search", "api"):
+            return forced
+        # Forced by constructor — caller wants the legacy path.
+        if self.prefer_api_mode and self.has_api_key:
+            return "api"
+        # No YT key → must use search mode.
+        if not self.has_api_key:
+            return "search"
+        # YT API quota exhausted / 403 / etc — backend_health knows.
+        try:
+            from .. import backend_health
+            if backend_health.is_blocked("youtube"):
+                return "search"
+        except Exception:
+            pass
+        # Shorts default = api (overriding the cost-saving pattern used
+        # by the long-form discoverer). YT API quota burn for Shorts is
+        # acceptable cost for the hero channel's coverage.
+        return "api"
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -193,9 +289,133 @@ class YouTubeShortsDiscoverer(ShortVideoDiscoverer):
     ) -> List[ShortVideoLink]:
         if not self.available:
             return []
-        return await asyncio.to_thread(
+        mode = self._select_mode()
+        if mode == "search":
+            return await self._discover_via_search(query, window, count)
+        # mode == "api" — legacy YT Data API path (rich metadata)
+        api_results = await asyncio.to_thread(
             self._discover_sync, query, window, count
         )
+        # Phase 3+ fallback: if API returned NOTHING (quota mid-call,
+        # transient 403, network blip), supplement with the free search
+        # path so the Shorts channel is never silently dark.
+        if not api_results:
+            try:
+                fb = await self._discover_via_search(query, window, count)
+                if fb:
+                    log.info(
+                        "yt_shorts: API returned 0 — fell back to search "
+                        "and recovered %d videos", len(fb),
+                    )
+                return fb
+            except Exception as e:
+                log.warning("yt_shorts search-fallback failed: %s", e)
+        return api_results
+
+    # ── Search-mode discovery (Phase 1.6) ──────────────────────────────────
+
+    async def _discover_via_search(
+        self,
+        query: TypedQuery,
+        window: TimeWindow,
+        count: int,
+    ) -> List[ShortVideoLink]:
+        """Free path: route through search backends, no YT API call."""
+        from ._youtube_search import youtube_via_search
+        return await youtube_via_search(
+            query, window, count,
+            shorts_only=True,
+            channel_id=self.channel_id,
+        )
+
+    # ── Enrichment hook (Phase 1.6) ────────────────────────────────────────
+
+    async def enrich_via_api(
+        self,
+        links: List[ShortVideoLink],
+        *,
+        fetch_comments: bool = True,
+        fetch_transcript: bool = True,
+    ) -> List[ShortVideoLink]:
+        """Fill view/like/comment counts + top comments + transcript via YT API.
+
+        Called by the orchestrator AFTER L5 dedup, BEFORE L6 triage, on the
+        small subset of links the triage will actually score (so quota burns
+        only for the top-N candidates, not all discovered links).
+
+        Mutates `links` in place AND returns them. Skips any link whose URL
+        isn't a YouTube URL or whose video_id can't be parsed.
+        """
+        if not self.has_api_key or not links:
+            return links
+        from ._youtube_search import extract_video_id
+        vid_to_link: Dict[str, ShortVideoLink] = {}
+        for lk in links:
+            vid = extract_video_id(lk.url) or extract_video_id(lk.canonical_url or "")
+            if vid:
+                vid_to_link[vid] = lk
+        if not vid_to_link:
+            return links
+
+        # videos.list batched fetch (50 per call)
+        try:
+            details = await asyncio.to_thread(
+                self._fetch_video_details, list(vid_to_link.keys()),
+            )
+        except Exception as e:
+            log.warning("YT enrich videos.list failed: %s", e)
+            return links
+
+        for vid, d in details.items():
+            lk = vid_to_link.get(vid)
+            if not lk:
+                continue
+            # Fill in stats from API response
+            lk.view_count = d.get("view_count")
+            lk.like_count = d.get("like_count")
+            lk.comment_count = d.get("comment_count")
+            if d.get("duration_sec") is not None:
+                lk.duration_sec = d["duration_sec"]
+            if d.get("creator"):
+                lk.creator = d["creator"]
+            if d.get("thumbnail_url"):
+                lk.thumbnail_url = d["thumbnail_url"]
+            if d.get("caption"):
+                lk.caption = d["caption"]
+            if d.get("hashtags"):
+                lk.hashtags = d["hashtags"]
+            if d.get("observed_at"):
+                lk.observed_at = d["observed_at"]
+            # Mark this link as API-enriched (for downstream triage to know
+            # whether to weight metadata fields).
+            lk.signal_tags = [
+                t for t in (lk.signal_tags or []) if t != "yt_search_mode"
+            ] + ["yt_api_enriched"]
+
+        # commentThreads.list — per-video, so only top-N to keep cost bounded.
+        if fetch_comments:
+            top_n_for_comments = min(self.top_n_enrichment, len(vid_to_link))
+            for vid in list(vid_to_link.keys())[:top_n_for_comments]:
+                lk = vid_to_link[vid]
+                try:
+                    lk.top_comments = await asyncio.to_thread(
+                        self._fetch_top_comments, vid,
+                    )
+                except Exception as e:
+                    log.info("YT enrich comments for %s failed: %s", vid, e)
+
+        if fetch_transcript and self.enable_transcripts:
+            top_n_for_tx = min(self.top_n_enrichment, len(vid_to_link))
+            for vid in list(vid_to_link.keys())[:top_n_for_tx]:
+                lk = vid_to_link[vid]
+                try:
+                    lk.transcript = await asyncio.to_thread(
+                        self._fetch_transcript, vid,
+                    )
+                except Exception:
+                    pass
+
+        return links
 
     # ── Sync pipeline (run in to_thread) ───────────────────────────────────
 

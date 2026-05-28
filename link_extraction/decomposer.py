@@ -75,7 +75,23 @@ GEO_PLACES: set[str] = {
     "germany", "france", "brazil", "russia", "canada", "australia",
     "italy", "spain", "mexico", "korea", "north america", "south america",
     "europe", "asia", "africa",
+    # Major Indian cities — mentioning any of these implies geo=india for
+    # query proxy expansion. Listed lower-case for the case-folded matcher.
+    "bengaluru", "bangalore", "mumbai", "bombay", "delhi", "new delhi",
+    "ncr", "gurugram", "gurgaon", "noida", "chennai", "madras",
+    "hyderabad", "kolkata", "calcutta", "pune", "ahmedabad", "kochi",
+    "cochin", "jaipur", "lucknow", "indore", "chandigarh", "surat",
+    "nagpur", "thiruvananthapuram", "trivandrum", "vizag", "visakhapatnam",
+    "coimbatore", "vadodara",
 }
+
+# Indian-city → state/region map. Used by proxy-query generation to
+# surface "Bangalore rental" → "Karnataka real estate" style adjacents.
+INDIA_CITIES: frozenset[str] = frozenset({
+    "bengaluru", "bangalore", "mumbai", "bombay", "delhi", "gurugram",
+    "gurgaon", "noida", "chennai", "hyderabad", "kolkata", "pune",
+    "ahmedabad", "kochi", "jaipur", "lucknow", "indore",
+})
 
 GEO_BLOCKLIST: set[str] = GEO_DEMONYMS | GEO_PLACES
 
@@ -87,12 +103,58 @@ DESCRIPTOR_SUFFIXES: set[str] = {
     "powered", "ready", "rich",
 }
 
-# Sentence-initial words to drop from the regex entity candidates.
+# Sentence-initial words / connectives / quantifiers to drop from the
+# regex entity candidates. Capitalized sentence-starts like "Given that…",
+# "Proving X requires…", "No meaningful opposite…" routinely get picked
+# up by the cap-noun regex and pollute primary_entity selection.
 CAP_STOPWORDS: set[str] = {
     "the", "a", "an", "this", "that", "these", "those",
     "why", "what", "how", "where", "when", "who", "which",
     "is", "are", "was", "were", "be", "been", "in", "on", "at",
     "and", "or", "but", "for", "to", "of", "by", "with",
+    # Sentence-initial connectives + participles often capitalised in
+    # analyst-written hypothesis text. (Long list — false positives here
+    # are cheaper than letting them pollute primary_entity.)
+    "given", "proving", "directly", "building", "adding", "noting",
+    "considering", "leveraging", "according", "regarding", "based",
+    "however", "moreover", "furthermore", "therefore", "thus", "hence",
+    "indeed", "still", "yet", "also", "additionally", "specifically",
+    "such", "many", "most", "some", "any", "all", "every", "each",
+    "no", "yes", "not", "none", "neither", "either", "both",
+    "his", "her", "their", "its", "our", "your", "my", "we", "they",
+    "it", "he", "she", "us", "them", "him", "i",
+    "do", "does", "did", "will", "would", "could", "should", "shall",
+    "may", "might", "must", "can", "has", "have", "had",
+    "more", "less", "much", "very", "too", "so", "just", "only",
+    "even", "ever", "never", "always", "often", "sometimes",
+    "if", "unless", "while", "though", "although", "because", "since",
+}
+
+# Generic role/audience nouns that LOOK like proper nouns when capitalised
+# at sentence start ("Prospects perceive…", "Customers report…") but are
+# never the actual brand/product being investigated. Filtered out of the
+# entity list entirely so they never become primary_entity.
+GENERIC_NOUN_STOPWORDS: set[str] = {
+    "prospects", "prospect", "customers", "customer",
+    "users", "user", "buyers", "buyer", "clients", "client",
+    "consumers", "consumer", "shoppers", "shopper",
+    "people", "person", "individuals", "individual",
+    "audiences", "audience", "members", "member",
+    "subscribers", "subscriber", "viewers", "viewer",
+    "readers", "reader", "listeners", "listener",
+    "fans", "fan", "followers", "follower",
+    "respondents", "respondent", "participants", "participant",
+    "brands", "brand", "companies", "company",
+    "competitors", "competitor", "competition",
+    "developers", "developer", "developments", "development",
+    "agents", "agent", "vendors", "vendor", "suppliers", "supplier",
+    "retailers", "retailer", "manufacturers", "manufacturer",
+    "providers", "provider", "operators", "operator",
+    "households", "household", "families", "family",
+    "stakeholders", "stakeholder", "decision", "decisions",
+    "purchase", "purchases", "purchasing", "purchaser",
+    "fgds", "fgd",  # focus group discussion abbreviation
+    "pestle", "swot", "tam", "sam", "som",  # analyst acronyms
 }
 
 # Map signal keywords → archetype labels (build plan §C).
@@ -151,6 +213,11 @@ class Decomposition(BaseModel):
     signal_archetypes: Dict[str, str] = Field(default_factory=dict)
     raw_signals: List[str] = Field(default_factory=list)
     raw_counter_signals: List[str] = Field(default_factory=list)
+    # Category-level topic keywords extracted from core_problem_statement +
+    # rationale. Used by the query synthesizer as a fallback when no real
+    # brand is named in the hypothesis (e.g. "property", "developer",
+    # "amenities", "pricing"). Populated by `_extract_category_topics()`.
+    category_topics: List[str] = Field(default_factory=list)
 
 
 # ─── spaCy loader ─────────────────────────────────────────────────────────────
@@ -184,6 +251,18 @@ def decompose(hypothesis: Dict[str, Any]) -> Decomposition:
     row shape. Required: `hypothesis_id` or `id`, `statement`.
     Optional: `expected_signals`, `expected_counter_signals`, `rationale`,
     `core_problem_statement`.
+
+    Phase 2 — when a ``ResearchContext`` is set in the ambient ContextVar
+    (i.e. this hypothesis came from a Full Manifest JSON, not a CSV), the
+    manifest's structured enrichment OVERRIDES the regex heuristics:
+
+      • ``primary_entity`` = manifest.client_brand_name
+      • ``competitor_anchors`` = manifest.competitors (merged with extracted)
+      • ``geo_hints``      = manifest.geo_hints + extracted
+      • ``identity_claims`` += manifest.target_cohorts
+      • ``category_topics`` += manifest.life_triggers + brand_attributes
+
+    When no manifest context is active, behaviour is unchanged.
     """
     hyp_id = hypothesis.get("hypothesis_id") or hypothesis.get("id") or ""
     statement = hypothesis.get("statement", "")
@@ -206,6 +285,61 @@ def decompose(hypothesis: Dict[str, Any]) -> Decomposition:
 
     signal_archetypes = {sig: _classify_signal(sig) for sig in raw_signals}
 
+    category_topics = _extract_category_topics(
+        statement, core_problem, rationale,
+        signals=raw_signals + raw_counter,
+    )
+
+    # ── Phase 2 — ResearchContext overrides + merges ───────────────────
+    try:
+        from .research_context import current_research_context
+        rc = current_research_context()
+    except Exception:
+        rc = None
+
+    if rc is not None and rc.is_active():
+        # 1. Brand override — manifest names the actual client brand which
+        #    the hypothesis text rarely contains explicitly ("the developer").
+        if rc.client_brand_name:
+            primary_entity = rc.client_brand_name
+
+        # 2. Competitor merge — manifest competitors take priority but we
+        #    keep any new ones the regex found (some hypotheses name a
+        #    secondary competitor the manifest didn't).
+        if rc.competitors:
+            merged = list(rc.competitors)
+            for c in competitor_anchors:
+                if c not in merged and c.lower() != (rc.client_brand_name or "").lower():
+                    merged.append(c)
+            competitor_anchors = merged[:8]   # cap to keep query gen bounded
+
+        # 3. Geo merge — manifest geo first (since it's authoritative),
+        #    appended with anything `_scan_geo` found that's not duplicate.
+        if rc.geo_hints:
+            merged_geo = list(rc.geo_hints)
+            for g in geo_hints:
+                if g not in merged_geo:
+                    merged_geo.append(g)
+            geo_hints = merged_geo
+
+        # 4. Identity claims merge — cohorts like "salaried 35-50" or
+        #    "HNI" become identity_claims so archetype 4 queries pick
+        #    them up ("best property for salaried 35-50").
+        if rc.target_cohorts:
+            merged_id = list(identity_claims)
+            for c in rc.target_cohorts:
+                if c not in merged_id:
+                    merged_id.append(c)
+            identity_claims = merged_id
+
+        # 5. Category-topic enrichment — life triggers + brand attributes
+        #    become extra topic anchors for archetype 10 proxy_search.
+        for term in list(rc.life_triggers) + list(rc.brand_attributes):
+            if term and term not in category_topics:
+                category_topics.append(term)
+        # Cap so the synthesizer's per-channel budget isn't blown.
+        category_topics = category_topics[:24]
+
     return Decomposition(
         hypothesis_id=hyp_id,
         entities=entities,
@@ -218,6 +352,7 @@ def decompose(hypothesis: Dict[str, Any]) -> Decomposition:
         signal_archetypes=signal_archetypes,
         raw_signals=raw_signals,
         raw_counter_signals=raw_counter,
+        category_topics=category_topics,
     )
 
 
@@ -290,12 +425,19 @@ def _post_filter_entities(entities: List[str]) -> List[str]:
         | {t.lower() for t in GEO_BLOCKLIST}
         | {t.lower() for t in ASPIRATION_WORDS}
         | {t.lower() for t in PAIN_WORDS}
+        | GENERIC_NOUN_STOPWORDS  # role-nouns: Prospects, Customers, Developers
+        | CAP_STOPWORDS           # sentence-initial: Given, Directly, No
     )
     survivors: List[str] = []
     for e in entities:
         el = e.lower()
         # Whole-string match against lexicons
         if el in lex_blocklist:
+            continue
+        # Single-token short uppercase abbreviations < 3 chars or sentence
+        # connectives that slipped through ("No", "It", "We"). Anything
+        # this short is almost never a real brand name.
+        if len(e) < 3 and " " not in e:
             continue
         # Hyphenated compound containing a lexicon term (e.g. "Self-care",
         # "Eco-friendly") — drop.
@@ -308,6 +450,13 @@ def _post_filter_entities(entities: List[str]) -> List[str]:
             parts = el.split("-")
             if len(parts) == 2 and parts[1] in DESCRIPTOR_SUFFIXES:
                 continue
+        # Multi-word entity whose FIRST token is a generic-noun stopword
+        # ("Prospects in Bengaluru" — keep "Bengaluru" only). For now,
+        # drop the whole thing rather than try to recover; the user
+        # rarely loses anything important.
+        first_word = e.split()[0].lower() if e else ""
+        if first_word in GENERIC_NOUN_STOPWORDS or first_word in CAP_STOPWORDS:
+            continue
         survivors.append(e)
 
     # Pass 2: possessive collapse — drop "Kellogg" if "Kellogg's" or
@@ -420,6 +569,89 @@ def _scan_geo(text: str) -> List[str]:
         # Longest-first to avoid double-matching ("south asian" before "asian")
         if re.search(rf"\b{re.escape(term)}\b", lowered) and term not in found:
             found.append(term)
+    return found
+
+
+# ─── Category topic extractor ─────────────────────────────────────────────────
+
+
+# Common domain terms found in market-research hypotheses. Conservative —
+# we want high precision (false positives confuse query synthesis).
+_CATEGORY_TOPIC_TERMS: List[str] = [
+    # Real estate / property
+    "real estate", "property", "properties", "apartment", "apartments",
+    "flat", "flats", "villa", "villas", "house", "houses", "home", "homes",
+    "amenities", "amenity", "micro-market", "micromarket", "developer",
+    "luxury", "premium", "affordable housing", "residential", "commercial",
+    "site visit", "site-visit", "floor plan", "carpet area", "rera",
+    "possession", "booking", "down payment", "emi",
+    # Travel
+    "hotel", "hotels", "flight", "flights", "vacation", "trip", "travel",
+    "booking", "homestay", "resort", "package tour",
+    # FMCG / food
+    "breakfast", "cereal", "snack", "snacks", "beverage", "beverages",
+    "packaged food", "instant", "ready-to-eat",
+    # Generic
+    "pricing", "positioning", "product", "feature", "features", "design",
+    "purchase", "buyer", "shopper", "review", "reviews", "experience",
+    "service", "support", "warranty", "delivery",
+    "investment", "value", "quality", "trust", "satisfaction",
+    "complaint", "complaints", "feedback", "decision",
+]
+
+
+def _extract_category_topics(
+    statement: str,
+    core_problem: str,
+    rationale: str,
+    *,
+    signals: Optional[List[str]] = None,
+) -> List[str]:
+    """Pull domain/category topic phrases from the hypothesis context.
+
+    Order matters: longer phrases first so "real estate" wins over "estate".
+    Returns deduped, lowercase, ordered list capped at 12 to keep query
+    synthesis bounded.
+
+    These topics feed the no-brand fallback path in the query synthesizer
+    when `primary_entity` would otherwise be empty/junk. For the real-estate
+    hypotheses in the reported bug, this surfaces ["property", "developer",
+    "amenities", "pricing", "site visit", ...] from core_problem.
+    """
+    text = " ".join(s for s in (statement, core_problem, rationale) if s).lower()
+    if not text:
+        return []
+    found: List[str] = []
+    seen: set[str] = set()
+    # Sort longest-first so "real estate" matches before "estate".
+    for term in sorted(_CATEGORY_TOPIC_TERMS, key=len, reverse=True):
+        if term in seen:
+            continue
+        if " " in term or "-" in term:
+            if term in text:
+                found.append(term)
+                seen.add(term)
+        else:
+            if re.search(rf"\b{re.escape(term)}\b", text):
+                found.append(term)
+                seen.add(term)
+        if len(found) >= 12:
+            break
+
+    # Pull additional context from signals themselves: "site_visit",
+    # "price_perception", "exit_narratives" all carry topic information.
+    for sig in (signals or []):
+        s = (sig or "").lower().replace("_", " ").strip()
+        if not s or s in seen or len(s) > 40:
+            continue
+        # Skip pure-archetype labels like "behavior", "sentiment".
+        if s in {"sentiment", "behavior", "comparison", "narrative",
+                 "demographic", "price"}:
+            continue
+        found.append(s)
+        seen.add(s)
+        if len(found) >= 16:
+            break
     return found
 
 

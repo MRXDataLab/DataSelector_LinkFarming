@@ -1,341 +1,328 @@
-# Channel weights for the L1 (Source Selector) scorer.
-#
-# Composite formula per channel for a given hypothesis:
-#   score = w_dim   * dimension_affinity[hyp.dimension][channel]
-#         + w_force * force_affinity[hyp.force_assignment].weights[channel]
-#         + w_sig   * signal_detectability_base[channel]
-#         + w_aud   * audience_match_default
-#         + w_conf  * confirmation_balance[channel] * 100
-#         + w_acc   * data_accessibility[channel]
-#
-# Channels listed in force_affinity[*].anti_platforms are forced to 0.
-# Channels with score < 50 are dropped (configurable in source_selector.py).
-#
-# All numeric scores are 0–100. confirmation_balance is 0–1.
-# Tune freely; this file is hand-curated, not generated.
-
-# Weights per investigation_priority (host enum: high | medium | low)
 priority_weights:
   high:
-    dimension_affinity:   0.20
-    force_alignment:      0.15
-    signal_detectability: 0.30
-    audience_match:       0.20
-    confirmation_balance: 0.10
-    data_accessibility:   0.05
+    dimension_affinity: 0.2
+    force_alignment: 0.15
+    signal_detectability: 0.3
+    audience_match: 0.2
+    confirmation_balance: 0.1
+    data_accessibility: 0.05
   medium:
-    dimension_affinity:   0.20
-    force_alignment:      0.15
+    dimension_affinity: 0.2
+    force_alignment: 0.15
     signal_detectability: 0.25
-    audience_match:       0.20
-    confirmation_balance: 0.10
-    data_accessibility:   0.10
+    audience_match: 0.2
+    confirmation_balance: 0.1
+    data_accessibility: 0.1
   low:
-    dimension_affinity:   0.20
-    force_alignment:      0.15
-    signal_detectability: 0.20
-    audience_match:       0.20
-    confirmation_balance: 0.10
-    data_accessibility:   0.15
-
-# Fixed per channel — measures ease of access (API quality, scrape feasibility).
+    dimension_affinity: 0.2
+    force_alignment: 0.15
+    signal_detectability: 0.2
+    audience_match: 0.2
+    confirmation_balance: 0.1
+    data_accessibility: 0.15
 data_accessibility:
-  google_web:       85
-  google_paa:       50   # headless required, CAPTCHA risk
-  google_related:   50
-  reddit:           90   # PRAW
-  quora:            50   # headless + sidebar scrape
-  youtube:          85   # YT Data API, quota costs
-  youtube_shorts:   85
-  tiktok:           40   # no official API; Brave/DDG site: fallback
-  instagram_reels:  30   # worst access surface
-  news:             80   # Brave News + GDELT
-  substack:         65
-  trends:           90   # pytrends, no key
-  marketplace:      60
-
-# Signal detectability baseline per channel (0–100) — how dense are
-# confirm/disconfirm signals when content is on-topic? Multiplied by
-# dimension_affinity in the runtime scorer.
+  google_web: 85
+  google_paa: 50
+  google_related: 50
+  reddit: 90
+  quora: 50
+  youtube: 85
+  youtube_shorts: 85
+  tiktok: 40
+  instagram_reels: 30
+  news: 80
+  substack: 65
+  trends: 90
+  marketplace: 60
+  scholar: 65
+  google_maps: 60
 signal_detectability_base:
-  reddit:           90   # explicit opinion text
-  quora:            85   # explicit Q&A
-  youtube:          70   # comments + transcripts
-  youtube_shorts:   75   # captions + comments
-  tiktok:           75   # caption + top comments dense
-  instagram_reels:  60   # captions thin, comments emoji-heavy
-  news:             65   # signal in framing
-  substack:         85   # long-form opinion
-  google_web:       55   # SERPs surface signals, per-page extraction needed
-  google_paa:       80   # PAA questions ARE signals
-  google_related:   75   # related searches ARE consumer language
-  trends:           70   # rising_queries ARE signals
-  marketplace:      90   # review text dense
-
-# Confirmation balance — can the channel surface BOTH supports & refutes?
+  reddit: 90
+  quora: 85
+  youtube: 70
+  youtube_shorts: 75
+  tiktok: 75
+  instagram_reels: 60
+  news: 65
+  substack: 85
+  google_web: 55
+  google_paa: 80
+  google_related: 75
+  trends: 70
+  marketplace: 90
+  scholar: 70
+  google_maps: 80
 confirmation_balance:
-  google_web:       0.90
-  google_paa:       0.95
-  google_related:   0.85
-  reddit:           1.00
-  quora:            0.95
-  youtube:          0.90
-  youtube_shorts:   0.85
-  tiktok:           0.75
-  instagram_reels:  0.60   # IG content skews aspirational
-  news:             0.70   # editorialized; refutes underrepresented
-  substack:         0.85
-  trends:           0.80
-  marketplace:      0.95
-
-# Placeholder — real audience-match logic comes in Phase 3 (decomposer
-# extracts hypothesis audience segment; scorer compares to platform demographics).
+  google_web: 0.9
+  google_paa: 0.95
+  google_related: 0.85
+  reddit: 1.0
+  quora: 0.95
+  youtube: 0.9
+  youtube_shorts: 0.85
+  tiktok: 0.75
+  instagram_reels: 0.6
+  news: 0.7
+  substack: 0.85
+  trends: 0.8
+  marketplace: 0.95
+  scholar: 0.95
+  google_maps: 0.85
 audience_match_default: 70
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Dimension → channel affinity (10 host dimensions × 13 channels).
-# Missing entries default to 0.
-# ──────────────────────────────────────────────────────────────────────────────
 dimension_affinity:
-
   price:
-    reddit:           80
-    quora:            65
-    marketplace:      90
-    news:             45
-    google_web:       70
-    google_paa:       60
-    google_related:   60
-    youtube:          55
-    youtube_shorts:   40
-    tiktok:           30
-    instagram_reels:  25
-    substack:         30
-    trends:           75
-
+    reddit: 80
+    quora: 65
+    marketplace: 90
+    news: 45
+    google_web: 70
+    google_paa: 60
+    google_related: 60
+    youtube: 55
+    youtube_shorts: 40
+    tiktok: 30
+    instagram_reels: 25
+    substack: 30
+    trends: 75
+    scholar: 35
+    google_maps: 55
   product:
-    reddit:           85
-    youtube:          90
-    youtube_shorts:   70
-    marketplace:      95
-    quora:            70
-    google_paa:       75
-    google_related:   65
-    tiktok:           60
-    instagram_reels:  55
-    news:             40
-    substack:         35
-    trends:           50
-    google_web:       80
-
+    reddit: 85
+    youtube: 90
+    youtube_shorts: 70
+    marketplace: 95
+    quora: 70
+    google_paa: 75
+    google_related: 65
+    tiktok: 60
+    instagram_reels: 55
+    news: 40
+    substack: 35
+    trends: 50
+    google_web: 80
+    scholar: 40
+    google_maps: 70
   brand_perception:
-    reddit:           85
-    tiktok:           85
-    instagram_reels:  80
-    youtube_shorts:   82
-    news:             60
-    quora:            55
-    youtube:          70
-    marketplace:      75
-    substack:         40
-    trends:           60
-    google_web:       65
-    google_paa:       50
-    google_related:   55
-
+    reddit: 85
+    tiktok: 85
+    instagram_reels: 80
+    youtube_shorts: 82
+    news: 60
+    quora: 55
+    youtube: 70
+    marketplace: 75
+    substack: 40
+    trends: 60
+    google_web: 65
+    google_paa: 50
+    google_related: 55
+    scholar: 45
+    google_maps: 75
   distribution:
-    reddit:           65
-    news:             80
-    quora:            50
-    google_web:       70
-    google_paa:       60
-    google_related:   55
-    substack:         55
-    marketplace:      55
-    youtube:          40
-    youtube_shorts:   30
-    tiktok:           25
-    instagram_reels:  20
-    trends:           40
-
+    reddit: 65
+    news: 80
+    quora: 50
+    google_web: 70
+    google_paa: 60
+    google_related: 55
+    substack: 55
+    marketplace: 55
+    youtube: 40
+    youtube_shorts: 30
+    tiktok: 25
+    instagram_reels: 20
+    trends: 40
+    scholar: 40
+    google_maps: 65
   cultural_identity:
-    tiktok:           95
-    instagram_reels:  92
-    youtube_shorts:   88
-    reddit:           80
-    substack:         75
-    youtube:          70
-    quora:            50
-    news:             45
-    google_web:       55
-    google_paa:       45
-    google_related:   45
-    trends:           75
-    marketplace:      25
-
+    tiktok: 95
+    instagram_reels: 92
+    youtube_shorts: 88
+    reddit: 80
+    substack: 75
+    youtube: 70
+    quora: 50
+    news: 45
+    google_web: 55
+    google_paa: 45
+    google_related: 45
+    trends: 75
+    marketplace: 25
+    scholar: 75
+    google_maps: 50
   regulatory:
-    news:             90
-    substack:         85
-    google_web:       75
-    google_paa:       65
-    google_related:   60
-    quora:            55
-    reddit:           50
-    youtube:          55
-    youtube_shorts:   25
-    tiktok:           20
-    instagram_reels:  20
-    marketplace:      20
-    trends:           40
-
+    news: 90
+    substack: 85
+    google_web: 75
+    google_paa: 65
+    google_related: 60
+    quora: 55
+    reddit: 50
+    youtube: 55
+    youtube_shorts: 25
+    tiktok: 20
+    instagram_reels: 20
+    marketplace: 20
+    trends: 40
+    scholar: 90
+    google_maps: 30
   demographic_shift:
-    substack:         80
-    news:             70
-    tiktok:           82
-    instagram_reels:  78
-    youtube_shorts:   80
-    reddit:           75
-    youtube:          65
-    quora:            60
-    google_paa:       55
-    google_related:   55
-    google_web:       55
-    trends:           82
-    marketplace:      40
-
+    substack: 80
+    news: 70
+    tiktok: 82
+    instagram_reels: 78
+    youtube_shorts: 80
+    reddit: 75
+    youtube: 65
+    quora: 60
+    google_paa: 55
+    google_related: 55
+    google_web: 55
+    trends: 82
+    marketplace: 40
+    scholar: 80
+    google_maps: 40
   competitive_shift:
-    reddit:           85
-    youtube:          80
-    youtube_shorts:   65
-    news:             70
-    google_paa:       75
-    google_related:   70
-    google_web:       75
-    quora:            65
-    marketplace:      70
-    tiktok:           55
-    instagram_reels:  50
-    substack:         55
-    trends:           65
-
+    reddit: 85
+    youtube: 80
+    youtube_shorts: 65
+    news: 70
+    google_paa: 75
+    google_related: 70
+    google_web: 75
+    quora: 65
+    marketplace: 70
+    tiktok: 55
+    instagram_reels: 50
+    substack: 55
+    trends: 65
+    scholar: 50
+    google_maps: 65
   situational_context:
-    news:             90
-    reddit:           75
-    tiktok:           80
-    youtube_shorts:   72
-    google_web:       70
-    google_paa:       55
-    google_related:   55
-    instagram_reels:  60
-    youtube:          50
-    quora:            40
-    marketplace:      30
-    substack:         45
-    trends:           78
-
+    news: 90
+    reddit: 75
+    tiktok: 80
+    youtube_shorts: 72
+    google_web: 70
+    google_paa: 55
+    google_related: 55
+    instagram_reels: 60
+    youtube: 50
+    quora: 40
+    marketplace: 30
+    substack: 45
+    trends: 78
+    scholar: 60
+    google_maps: 70
   identity_expression:
-    tiktok:           95
-    instagram_reels:  95
-    youtube_shorts:   88
-    reddit:           75
-    substack:         60
-    youtube:          65
-    quora:            55
-    news:             35
-    google_paa:       40
-    google_related:   40
-    google_web:       50
-    trends:           55
-    marketplace:      30
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Force → channel affinity, with anti_platforms exclusion list.
-# Host enum: Demand Gravity | Choice Architecture Pressure | Value Elasticity
-# Field | Reinforcement Stability | Competitive Energy Field.
-# ──────────────────────────────────────────────────────────────────────────────
+    tiktok: 95
+    instagram_reels: 95
+    youtube_shorts: 88
+    reddit: 75
+    substack: 60
+    youtube: 65
+    quora: 55
+    news: 35
+    google_paa: 40
+    google_related: 40
+    google_web: 50
+    trends: 55
+    marketplace: 30
+    scholar: 65
+    google_maps: 55
 force_affinity:
-
-  "Demand Gravity":
+  Demand Gravity:
     weights:
-      reddit:           85
-      tiktok:           85
-      instagram_reels:  80
-      youtube_shorts:   85
-      youtube:          80
-      news:             60
-      quora:            65
-      google_paa:       75
-      google_related:   70
-      google_web:       70
-      marketplace:      75
-      substack:         50
-      trends:           90
+      reddit: 85
+      tiktok: 85
+      instagram_reels: 80
+      youtube_shorts: 85
+      youtube: 80
+      news: 60
+      quora: 65
+      google_paa: 75
+      google_related: 70
+      google_web: 70
+      marketplace: 75
+      substack: 50
+      trends: 90
+      scholar: 55
+      google_maps: 60
     anti_platforms: []
-
-  "Choice Architecture Pressure":
+  Choice Architecture Pressure:
     weights:
-      reddit:           80
-      youtube:          75
-      youtube_shorts:   60
-      marketplace:      85
-      quora:            70
-      google_paa:       75
-      google_related:   70
-      google_web:       75
-      news:             55
-      tiktok:           45
-      instagram_reels:  40
-      substack:         55
-      trends:           50
-    anti_platforms: [trends]
-
-  "Value Elasticity Field":
+      reddit: 80
+      youtube: 75
+      youtube_shorts: 60
+      marketplace: 85
+      quora: 70
+      google_paa: 75
+      google_related: 70
+      google_web: 75
+      news: 55
+      tiktok: 45
+      instagram_reels: 40
+      substack: 55
+      trends: 50
+      scholar: 55
+      google_maps: 60
+    anti_platforms:
+    - trends
+  Value Elasticity Field:
     weights:
-      reddit:           85
-      marketplace:      85
-      quora:            75
-      google_web:       70
-      google_paa:       65
-      google_related:   65
-      news:             65
-      youtube:          60
-      youtube_shorts:   45
-      tiktok:           30
-      instagram_reels:  25
-      substack:         60
-      trends:           70
-    anti_platforms: [tiktok, instagram_reels]
-
-  "Reinforcement Stability":
+      reddit: 85
+      marketplace: 85
+      quora: 75
+      google_web: 70
+      google_paa: 65
+      google_related: 65
+      news: 65
+      youtube: 60
+      youtube_shorts: 45
+      tiktok: 30
+      instagram_reels: 25
+      substack: 60
+      trends: 70
+      scholar: 55
+      google_maps: 60
+    anti_platforms:
+    - tiktok
+    - instagram_reels
+  Reinforcement Stability:
     weights:
-      reddit:           80
-      youtube:          75
-      youtube_shorts:   65
-      quora:            65
-      substack:         70
-      marketplace:      65
-      google_web:       55
-      google_paa:       55
-      google_related:   55
-      tiktok:           55
-      instagram_reels:  50
-      trends:           50
-      news:             40
-    anti_platforms: [news]
-
-  "Competitive Energy Field":
+      reddit: 80
+      youtube: 75
+      youtube_shorts: 65
+      quora: 65
+      substack: 70
+      marketplace: 65
+      google_web: 55
+      google_paa: 55
+      google_related: 55
+      tiktok: 55
+      instagram_reels: 50
+      trends: 50
+      news: 40
+      scholar: 55
+      google_maps: 60
+    anti_platforms:
+    - news
+  Competitive Energy Field:
     weights:
-      reddit:           85
-      youtube:          80
-      youtube_shorts:   65
-      news:             75
-      quora:            70
-      marketplace:      75
-      google_paa:       80
-      google_related:   75
-      google_web:       75
-      tiktok:           50
-      instagram_reels:  40
-      substack:         55
-      trends:           70
-    anti_platforms: [instagram_reels]
+      reddit: 85
+      youtube: 80
+      youtube_shorts: 65
+      news: 75
+      quora: 70
+      marketplace: 75
+      google_paa: 80
+      google_related: 75
+      google_web: 75
+      tiktok: 50
+      instagram_reels: 40
+      substack: 55
+      trends: 70
+      scholar: 55
+      google_maps: 60
+    anti_platforms:
+    - instagram_reels

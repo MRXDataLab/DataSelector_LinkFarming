@@ -89,6 +89,15 @@ _INDIA_HOSTS: frozenset[str] = frozenset({
     "policybazaar.com", "paisabazaar.com", "bankbazaar.com",
     "1mg.com", "pharmeasy.in", "netmeds.com", "apollopharmacy.in",
     "byjus.com", "unacademy.com", "vedantu.com",
+    # Travel / OTA (India-specific)
+    "cleartrip.com", "goibibo.com", "easemytrip.com",
+    "oyo.com", "treebo.in", "fabhotels.com",
+    # Real estate
+    "nobroker.com", "housing.com", "squareyards.com",
+    "commonfloor.com", "proptiger.com", "makaan.com", "nestaway.com",
+    # Services / hyperlocal
+    "justdial.com", "sulekha.com", "urbancompany.com",
+    "practo.com", "lybrate.com", "insider.in", "shine.com",
 })
 
 # Subreddit names that strongly imply India audience (lowercased).

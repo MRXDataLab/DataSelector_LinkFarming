@@ -54,12 +54,42 @@ _QUICK_COMMERCE_HOSTS = (
     "dunzo.com", "bigbasket.com", "zomato.com",
 )
 
+# Travel / OTA — India-first, then global.
+_TRAVEL_HOSTS = (
+    "makemytrip.com", "yatra.com", "ixigo.com", "cleartrip.com",
+    "goibibo.com", "irctc.co.in", "easemytrip.com",
+    "booking.com", "tripadvisor.com", "trivago.com",
+    "expedia.com", "airbnb.com", "agoda.com",
+    "oyo.com", "treebo.in", "fabhotels.com",
+)
+
+# Real estate / property — India-first.
+_REALESTATE_HOSTS = (
+    "magicbricks.com", "99acres.com", "nobroker.com", "housing.com",
+    "squareyards.com", "commonfloor.com", "proptiger.com",
+    "makaan.com", "nestaway.com",
+    "zillow.com", "realtor.com",
+)
+
+# Services / hyperlocal / health / finance.
+_SERVICES_HOSTS = (
+    "justdial.com", "sulekha.com", "urbancompany.com",
+    "practo.com", "1mg.com", "pharmeasy.in", "netmeds.com",
+    "apollopharmacy.in", "lybrate.com",
+    "policybazaar.com", "bankbazaar.com", "paisabazaar.com",
+    "naukri.com", "shine.com", "monster.com",
+    "bookmyshow.com", "insider.in",
+)
+
 # Union for the host-allow filter (anything in any category passes).
 _MARKETPLACE_HOSTS = (
     *_REVIEW_HOSTS,
     *_ECOM_HOSTS_INDIA,
     *_ECOM_HOSTS_GLOBAL,
     *_QUICK_COMMERCE_HOSTS,
+    *_TRAVEL_HOSTS,
+    *_REALESTATE_HOSTS,
+    *_SERVICES_HOSTS,
 )
 
 
@@ -73,6 +103,12 @@ def _host_category(host: str) -> str:
         return "ecom_global"
     if any(host.endswith(h) for h in _REVIEW_HOSTS):
         return "reviews"
+    if any(host.endswith(h) for h in _TRAVEL_HOSTS):
+        return "travel"
+    if any(host.endswith(h) for h in _REALESTATE_HOSTS):
+        return "real_estate"
+    if any(host.endswith(h) for h in _SERVICES_HOSTS):
+        return "services"
     return "other"
 
 
@@ -83,6 +119,9 @@ _BRAVE_SITE_GROUPS = (
     ("ecom_india",     _ECOM_HOSTS_INDIA[:6]),
     ("ecom_global",    _ECOM_HOSTS_GLOBAL[:5]),
     ("quick_commerce", _QUICK_COMMERCE_HOSTS[:6]),
+    ("travel",         _TRAVEL_HOSTS[:6]),
+    ("real_estate",    _REALESTATE_HOSTS[:6]),
+    ("services",       _SERVICES_HOSTS[:6]),
 )
 
 
@@ -119,7 +158,13 @@ class MarketplaceDiscoverer(Discoverer):
     channel_id = "marketplace"
 
     def __init__(self) -> None:
-        self.available = get_brave().available
+        # Phase 1 fix: any web-search backend can do `site:` rewriting.
+        from ..backends.registry import get_ddg, get_headless
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,
@@ -127,9 +172,66 @@ class MarketplaceDiscoverer(Discoverer):
         window: TimeWindow,
         count: int = 10,
     ) -> List[DiscoveredLink]:
-        if not get_brave().available:
-            return []
+        # Phase 1.5 — pick a query strategy based on which backend is healthy.
+        # Brave handles `site:A OR site:B OR ... OR site:F` reliably; DDG/Bing
+        # do not (return 0 results for the OR-chain). When Brave is dead or
+        # blocked, drop the site filter entirely and post-filter by host.
+        from .. import backend_health
+        brave_usable = (
+            get_brave().available
+            and not backend_health.is_blocked("brave")
+        )
 
+        if brave_usable:
+            return await self._discover_brave_path(query, window, count)
+        return await self._discover_filterless_path(query, window, count)
+
+    async def _discover_filterless_path(
+        self, query: TypedQuery, window: TimeWindow, count: int,
+    ) -> List[DiscoveredLink]:
+        """Brave-less fallback: bare query, post-filter to marketplace hosts.
+
+        Used when Brave is unavailable / quota-exhausted. DDG / headless
+        Google can't handle the 6-way `site:OR` clause Brave's discover path
+        uses, so we issue the un-filtered query and lean on `_is_marketplace_url()`
+        to keep only links from known marketplace / quick-commerce / real-estate
+        / travel hosts. Yields fewer results overall than the Brave path,
+        but yields >0 — which is the point.
+        """
+        # Over-fetch heavily since we'll throw away non-marketplace links
+        raw = await search_with_fallback(
+            query.text,
+            vertical="web",
+            count=count * 4,
+            window=window,
+            min_results=1,
+        )
+        out: List[DiscoveredLink] = []
+        seen: set[str] = set()
+        for r in raw:
+            if not _is_marketplace_url(r.url):
+                continue
+            canonical = r.url.split("#", 1)[0].rstrip("/")
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            link = raw_result_to_link(
+                r, query, self.channel_id, backend_used=r.backend,
+            )
+            link.url = canonical
+            link.canonical_url = canonical
+            host = _host_of(canonical)
+            cat = _host_category(host)
+            link.signal_tags = list(link.signal_tags) + [f"host_category:{cat}"]
+            out.append(link)
+            if len(out) >= count:
+                break
+        return out
+
+    async def _discover_brave_path(
+        self, query: TypedQuery, window: TimeWindow, count: int,
+    ) -> List[DiscoveredLink]:
+        """Original 7-category Brave path — uses multi-site `site:OR` clauses."""
         per_group_count = max(2, count // len(_BRAVE_SITE_GROUPS))
         out: List[DiscoveredLink] = []
         seen: set[str] = set()

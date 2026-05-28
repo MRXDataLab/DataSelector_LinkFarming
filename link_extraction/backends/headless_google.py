@@ -34,6 +34,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urlparse
 
+from .. import backend_health
 from ..models import QueryVertical, RawResult, TimeWindow
 from ..temporal import to_google_tbs
 from .base import SearchBackend
@@ -62,6 +63,10 @@ VIEWPORTS = [
 VERTICAL_TBM: dict[str, str] = {
     "videos": "&tbm=vid",
     "news":   "&tbm=nws",
+    # `scholar` and `local` route to different Google subdomains — see
+    # `_url_for_vertical()`. The `&tbm=` value here is unused for those.
+    "scholar": "",
+    "local":   "",
     "shopping": "&tbm=shop",
 }
 
@@ -115,12 +120,20 @@ class HeadlessGoogleBackend(SearchBackend):
         try:
             import playwright  # noqa: F401
             self.available = True
+            backend_health.report(
+                "headless_google", "ok",
+                message="playwright installed; ready",
+            )
         except ImportError:
             log.info(
                 "playwright not installed; HeadlessGoogleBackend disabled. "
                 "Install: pip install playwright && playwright install chromium"
             )
             self.available = False
+            backend_health.report(
+                "headless_google", "not_installed",
+                message="pip install playwright && playwright install chromium",
+            )
 
     # ── cooldown helpers ────────────────────────────────────────────────────
 
@@ -129,6 +142,11 @@ class HeadlessGoogleBackend(SearchBackend):
 
     def _enter_cooldown(self) -> None:
         HeadlessGoogleBackend._captcha_until = time.time() + self.cooldown_sec
+        backend_health.report(
+            "headless_google", "captcha_cooldown",
+            message=f"Google flagged CAPTCHA; backing off {self.cooldown_sec}s",
+            cooldown_seconds=self.cooldown_sec,
+        )
         log.warning(
             "Headless Google entered CAPTCHA cooldown for %ds", self.cooldown_sec
         )
@@ -272,11 +290,31 @@ class HeadlessGoogleBackend(SearchBackend):
         window: Optional[TimeWindow],
     ) -> List[RawResult]:
         tbs = to_google_tbs(window) if window else None
-        params = f"?q={quote_plus(query)}&num={count}&hl=en"
-        params += VERTICAL_TBM.get(vertical, "")
-        if tbs:
-            params += f"&tbs={quote_plus(tbs)}"
-        url = "https://www.google.com/search" + params
+        # Phase 1.6 — Scholar + Maps use different subdomains. Route them
+        # through dedicated URL builders so we don't accidentally send a
+        # `&tbm=` parameter to `scholar.google.com` (which it ignores) or
+        # try to scrape a Maps interactive page.
+        if vertical == "scholar":
+            url = (
+                f"https://scholar.google.com/scholar"
+                f"?q={quote_plus(query)}&num={count}&hl=en"
+            )
+            if tbs:
+                url += f"&as_ylo={_year_lo_from_tbs(tbs)}"
+        elif vertical == "local":
+            # The local-pack appears in a plain web search for any
+            # location-intent query — no special URL needed. We parse the
+            # local card from the regular SERP in `_extract_local()`.
+            params = f"?q={quote_plus(query)}&num={count}&hl=en"
+            if tbs:
+                params += f"&tbs={quote_plus(tbs)}"
+            url = "https://www.google.com/search" + params
+        else:
+            params = f"?q={quote_plus(query)}&num={count}&hl=en"
+            params += VERTICAL_TBM.get(vertical, "")
+            if tbs:
+                params += f"&tbs={quote_plus(tbs)}"
+            url = "https://www.google.com/search" + params
 
         ctx = await self._get_context()
         page = await ctx.new_page()
@@ -322,6 +360,14 @@ class HeadlessGoogleBackend(SearchBackend):
                 results = await self._extract_paa(page, count)
             elif vertical == "related":
                 results = await self._extract_related(page, count)
+            elif vertical == "scholar":
+                results = await self._extract_scholar(page, count)
+            elif vertical == "local":
+                # Local-pack lives inline in a web SERP — also fall through
+                # to organic if the pack is empty.
+                results = await self._extract_local(page, count)
+                if len(results) < count:
+                    results += await self._extract_organic(page, "web", count - len(results))
             else:
                 results = await self._extract_organic(page, vertical, count)
                 if vertical == "web":
@@ -332,6 +378,11 @@ class HeadlessGoogleBackend(SearchBackend):
             except Exception:
                 pass
 
+        # Reaching here means no CAPTCHA + no goto failure: mark healthy.
+        backend_health.report(
+            "headless_google", "ok",
+            message=f"{vertical}: {len(results)} results",
+        )
         return results
 
     async def _extract_organic(
@@ -411,3 +462,101 @@ class HeadlessGoogleBackend(SearchBackend):
             except Exception:
                 continue
         return out
+
+    # ── Phase 1.6 — Scholar + Local extractors ──────────────────────────────
+
+    async def _extract_scholar(self, page, count: int) -> List[RawResult]:
+        """Parse Google Scholar SERP — title + snippet + paper URL per result.
+
+        Scholar's DOM differs from web SERP: each result lives in
+        `div.gs_ri` with title link inside `h3.gs_rt > a` and the abstract
+        snippet inside `div.gs_rs`.
+        """
+        out: List[RawResult] = []
+        items = await page.query_selector_all("div.gs_ri")
+        for item in items[:count]:
+            try:
+                title_link = await item.query_selector("h3.gs_rt a")
+                href = await title_link.get_attribute("href") if title_link else ""
+                title = (await title_link.inner_text()) if title_link else ""
+                snippet_el = await item.query_selector("div.gs_rs")
+                snippet = (await snippet_el.inner_text()) if snippet_el else ""
+                # Citation metadata (year, authors) lives in div.gs_a
+                meta_el = await item.query_selector("div.gs_a")
+                meta = (await meta_el.inner_text()) if meta_el else ""
+                if href:
+                    out.append(
+                        RawResult(
+                            url=href, title=title.strip(), snippet=snippet.strip(),
+                            backend=self.id, vertical="scholar",
+                            raw_metadata={"citation_meta": meta.strip()[:200]},
+                        )
+                    )
+            except Exception:
+                continue
+        return out
+
+    async def _extract_local(self, page, count: int) -> List[RawResult]:
+        """Parse the Google local-pack (3-pack of places) from a web SERP.
+
+        Local results carry a place name + a snippet showing rating /
+        review count / address. The link is the place card's "Website"
+        anchor when present, otherwise the Maps `place_id` URL.
+        """
+        out: List[RawResult] = []
+        # Local-pack containers — Google A/B tests these classes so we hedge.
+        nodes = await page.query_selector_all(
+            "div.VkpGBb, div[data-hveid] div.rllt__details, "
+            "g-place-result, div.uMdZh"
+        )
+        for node in nodes[:count]:
+            try:
+                # Title — place name
+                title_el = await node.query_selector(
+                    "div.dbg0pd, span.OSrXXb, div.rllt__details > div"
+                )
+                title = (await title_el.inner_text()).strip().split("\n")[0] if title_el else ""
+                # Snippet — rating + review count + address
+                snippet_el = await node.query_selector(
+                    "div.rllt__details, div.rllt__wrapped"
+                )
+                snippet = (await snippet_el.inner_text()).strip() if snippet_el else ""
+                # Link — prefer the "Website" anchor, fall back to any link
+                link_el = await node.query_selector(
+                    "a[data-noner]:not([href^='/maps']), a[href^='http']"
+                )
+                href = (await link_el.get_attribute("href")) if link_el else ""
+                if title and (href or snippet):
+                    out.append(
+                        RawResult(
+                            url=href or "",
+                            title=title,
+                            snippet=snippet[:400],
+                            backend=self.id,
+                            vertical="local",
+                        )
+                    )
+            except Exception:
+                continue
+        return out
+
+
+def _year_lo_from_tbs(tbs: str) -> str:
+    """Best-effort year-low for Scholar's `as_ylo` from a Google `tbs=qdr:y` value.
+
+    Scholar uses a different time syntax than the main SERP: `as_ylo=2024`
+    instead of `tbs=qdr:y`. We map only the year case (the only one Scholar
+    cares about for our 7d / 30d / 90d / 1y / 5y windows — sub-year is
+    irrelevant for academic papers).
+    """
+    import datetime
+    if "qdr:" not in (tbs or ""):
+        return ""
+    # qdr:y1 ⇒ 1 year, qdr:y5 ⇒ 5 years, qdr:m ⇒ 1 month (ignored), etc.
+    suffix = tbs.split("qdr:", 1)[1].rstrip(",").strip()
+    years_back = 1
+    if suffix.startswith("y"):
+        n = suffix[1:]
+        if n.isdigit():
+            years_back = int(n)
+    return str(datetime.datetime.utcnow().year - years_back)

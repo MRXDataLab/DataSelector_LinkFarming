@@ -25,6 +25,7 @@ import re
 from typing import List, Optional
 
 from ..backends import get_brave, search_with_fallback
+from ..backends.registry import get_ddg, get_headless
 from ..models import DiscoveredLink, TimeWindow, TypedQuery
 from ._common import raw_result_to_link
 from .base import Discoverer
@@ -53,8 +54,15 @@ class QuoraDiscoverer(Discoverer):
     channel_id = "quora"
 
     def __init__(self) -> None:
-        # Brave is the only path; without it we can't do anything useful.
-        self.available = get_brave().available
+        # Available if ANY web-search backend is up — `site:quora.com`
+        # rewriting works on Brave, DDG, and headless Google. (Phase 1 fix
+        # — previously hard-gated on Brave, so a quota-exhausted Brave
+        # silently turned this channel off.)
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,

@@ -232,6 +232,10 @@ def create_batch(
     registry: Optional[DiscovererRegistry] = None,
     triage_strictness: str = "liberal",
     backend_preferences: Optional[Any] = None,
+    skip_triage: bool = False,
+    research_context: Optional[Any] = None,
+    skip_synthesis: bool = True,
+    max_synthesis_links: int = 12,
 ) -> str:
     """Register a new batch from a `ParsedBatch` and kick off the runner task.
 
@@ -269,6 +273,10 @@ def create_batch(
     # per-BatchMember because they don't have per-row overrides today).
     state._triage_strictness = triage_strictness  # type: ignore[attr-defined]
     state._backend_preferences = backend_preferences  # type: ignore[attr-defined]
+    state._skip_triage = skip_triage  # type: ignore[attr-defined]
+    state._research_context = research_context  # type: ignore[attr-defined]
+    state._skip_synthesis = skip_synthesis  # type: ignore[attr-defined]
+    state._max_synthesis_links = max_synthesis_links  # type: ignore[attr-defined]
     _batches[batch_id] = state
 
     state.task = asyncio.create_task(
@@ -315,6 +323,10 @@ async def _run_member(
                 max_triage=member.max_triage,
                 triage_strictness=getattr(state, "_triage_strictness", "liberal"),
                 backend_preferences=getattr(state, "_backend_preferences", None),
+                skip_triage=getattr(state, "_skip_triage", False),
+                research_context=getattr(state, "_research_context", None),
+                skip_synthesis=getattr(state, "_skip_synthesis", True),
+                max_synthesis_links=getattr(state, "_max_synthesis_links", 12),
             )
         except Exception as e:
             member.status = "error"

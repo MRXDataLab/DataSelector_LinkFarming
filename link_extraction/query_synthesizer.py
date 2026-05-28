@@ -52,27 +52,52 @@ log = logging.getLogger(__name__)
 #   7 expert_authority     8 crisis_event       9 hashtag_trend
 
 CHANNEL_ARCHETYPES: Dict[ChannelId, List[Archetype]] = {
+    # Archetype 10 = proxy_search (geo+category+competitor combos).
+    # PLACED EARLY in each channel's list so proxy queries get priority
+    # budget allocation — they're the highest-yield queries for
+    # branded hypotheses with thin direct coverage.
+    #
+    # Phase 1.5 fix — drop nonsense archetype×channel combos that produced
+    # zero-result queries against host-restricted backends:
+    #   * marketplace dropped archetype 6 (counter_evidence: "why i love X")
+    #     — Amazon / Zepto / MakeMyTrip don't host opinion content.
+    #   * news dropped archetype 6 — news sites don't host first-person
+    #     "why i love" stories either.
+    #   * marketplace dropped archetype 4 (identity_aspiration: "best X for
+    #     gen-z") — also rare on marketplace surface; reviews-leaning
+    #     pages are surfaced by archetypes 1+3.
+    #
     # Short-video — full short-video template set, hashtag mandatory.
-    "youtube_shorts": [1, 2, 3, 4, 6, 7, 9],
-    "tiktok": [1, 2, 3, 4, 6, 8, 9],
-    "instagram_reels": [1, 2, 4, 6, 9],
+    "youtube_shorts": [1, 10, 2, 3, 4, 6, 7, 9],
+    "tiktok": [1, 10, 2, 3, 4, 6, 8, 9],
+    "instagram_reels": [1, 10, 2, 4, 6, 9],
     # Long-form text channels
-    "reddit": [1, 2, 3, 5, 6, 8],
-    "quora": [3, 4, 5, 6],
-    "google_web": [1, 2, 3, 5, 6, 7],
-    "google_paa": [3, 5, 6],            # PAA biases hard toward questions
-    "google_related": [1, 3, 5],
-    "youtube": [1, 3, 4, 6, 7, 8],      # long-form video
-    "news": [1, 6, 8],                  # crisis-heavy
-    "substack": [3, 4, 7, 8],
-    "marketplace": [1, 3, 4, 6],        # review-leaning
+    "reddit": [10, 1, 2, 3, 5, 6, 8],
+    "quora": [10, 3, 4, 5, 6],
+    "google_web": [10, 1, 2, 3, 5, 6, 7],
+    "google_paa": [10, 3, 5, 6],            # PAA biases hard toward questions
+    "google_related": [10, 1, 3, 5],
+    "youtube": [10, 1, 3, 4, 6, 7, 8],      # long-form video
+    "news": [10, 1, 8],                     # crisis-heavy (dropped 6)
+    "substack": [10, 3, 4, 7, 8],
+    "marketplace": [10, 1, 3],              # review-leaning (dropped 4, 6)
     "trends": [],                       # amplifier only, never a discovery target
+    # Phase 1.6 — new channels
+    "scholar": [10, 5, 7, 1],           # academic: questions + expert + pain
+    "google_maps": [10, 1, 3],          # local-place reviews: pain + comparison
 }
 
 # Hashtag archetype (9) only applies to short-video channels by spec.
 # Question archetype (5) is "rarely used" in short-video — excluded above.
 
-MAX_QUERIES_PER_CHANNEL = 8
+# Per-channel query budget. Phase 2 bumped to 18 so manifest-aware
+# proxies (life-triggers × brand, cohort × brand, competitor full
+# crossproduct) all fit alongside the brand-bound templates. At 18 ×
+# ~7 active channels ≈ 126 backend calls per hypothesis — still inside
+# Brave's 2k/mo allowance for ~15 hypotheses/month. When triage is off
+# (skip_triage=True), there's no LLM cost so this is mostly headless +
+# DDG load which scales fine.
+MAX_QUERIES_PER_CHANNEL = 18
 
 # Defaults when the LLM slot-fill is unavailable or returns blanks.
 _FALLBACK_DIM_TERMS = ["health", "taste", "price"]
@@ -101,6 +126,8 @@ class _Slots:
         expert_roles: List[str],
         year_anchors: List[str],
         rising_phrases: List[str],
+        category_topics: Optional[List[str]] = None,
+        no_brand_mode: bool = False,
     ) -> None:
         self.brand = brand
         self.brand_aliases = brand_aliases
@@ -114,6 +141,11 @@ class _Slots:
         self.expert_roles = expert_roles
         self.year_anchors = year_anchors
         self.rising_phrases = rising_phrases
+        # No-brand fallback: when the hypothesis has no real brand named,
+        # the synthesizer uses these category topics (drawn from
+        # core_problem_statement + rationale) as the search subject.
+        self.category_topics = category_topics or []
+        self.no_brand_mode = no_brand_mode
 
 
 # ─── LLM slot-filler ─────────────────────────────────────────────────────────
@@ -232,6 +264,44 @@ def _assemble_slots(
     else:
         rising = []
 
+    # Category topics extracted by the decomposer from core_problem +
+    # rationale + statement. Always merged into category_terms /
+    # dimension_terms so the proxy_search archetype (10) has rich
+    # geo × category material — whether or not a brand was found.
+    decomp_topics = list(getattr(decomp, "category_topics", []) or [])
+    if decomp_topics:
+        for t in decomp_topics:
+            if t not in category_terms and len(category_terms) < 6:
+                category_terms.append(t)
+
+    # No-brand mode: hypothesis had no real entity to anchor queries on
+    # (e.g. "the developer lacks…" with no specific firm named). Use the
+    # category topics extracted by the decomposer as the search subject.
+    no_brand = not bool(brand)
+    if no_brand and decomp_topics:
+        # Pick a synthetic "brand" — prefer a domain phrase (multi-word
+        # category term like "real estate", "site visit") over a single
+        # word, then fall back to the first topic. The decomposer puts
+        # domain terms BEFORE signal-derived terms in the list, so the
+        # first multi-word phrase tends to be the most natural anchor.
+        multi_word = [t for t in decomp_topics if " " in t]
+        if multi_word:
+            synthetic = multi_word[0]
+        else:
+            synthetic = decomp_topics[0]
+        brand = synthetic
+        # Aliases — additional domain terms the templates can blend in.
+        aliases = [t for t in decomp_topics
+                   if t != synthetic and len(t.split()) <= 2][:3]
+        # Also merge the topics into the dimension/category buckets so
+        # archetype 3 (comparison) and 5 (question_analysis) have richer
+        # input. Avoid duplicates while preserving order.
+        for t in decomp_topics:
+            if t not in category_terms and len(category_terms) < 5:
+                category_terms.append(t)
+            if t not in dimension_terms and len(dimension_terms) < 8:
+                dimension_terms.append(t)
+
     return _Slots(
         brand=brand,
         brand_aliases=aliases,
@@ -245,6 +315,8 @@ def _assemble_slots(
         expert_roles=expert_roles,
         year_anchors=year_anchors,
         rising_phrases=rising,
+        category_topics=decomp_topics,
+        no_brand_mode=no_brand,
     )
 
 
@@ -257,13 +329,29 @@ def _gen_archetype(
     """Return list of (query_text, target_signal) for one archetype.
 
     Empty list if required slots are missing for this archetype.
+
+    In ``no_brand_mode`` (no specific brand named in the hypothesis) the
+    templates degrade gracefully to category-driven queries. e.g. an
+    "entity_pain" query becomes a buyer-complaint search ("property
+    review negative") rather than a literal brand-name search.
     """
     b = slots.brand
     if not b:
         return []
 
+    # In no-brand mode, falsifier/love templates ("why i love real estate")
+    # read oddly, so we route those archetypes through category-aware
+    # phrasings rather than the literal brand-name template.
+    nb = slots.no_brand_mode
+
     if archetype == 1:  # entity_pain
         if short_video:
+            if nb:
+                geo_prefix = slots.geo[0] if slots.geo else ""
+                return [
+                    (f"{geo_prefix} {b} buyer complaints".strip(), "user_complaint_clip"),
+                    (f"{b} disappointment", "user_complaint_clip"),
+                ]
             return [
                 (f"{b} cringe", "user_complaint_clip"),
                 (f"{b} fail", "user_complaint_clip"),
@@ -272,16 +360,38 @@ def _gen_archetype(
         for p in slots.pains[:3]:
             out.append((f"{b} {p}", "user_complaint_text"))
         if not out:
-            out.append((f"{b} review negative", "user_complaint_text"))
+            geo_prefix = slots.geo[0] if slots.geo else ""
+            out.append(
+                ((f"{geo_prefix} {b} buyer complaints".strip()
+                  if nb else f"{b} review negative"),
+                 "user_complaint_text")
+            )
         return out
 
     if archetype == 2:  # switching_narrative
         if not slots.alternatives:
+            # No alternatives — but in no-brand mode we still want some
+            # switching-like signal from the broader category.
+            if nb and slots.pains:
+                return [
+                    (f"abandoned {b} because of {p}", "switching_narrative")
+                    for p in slots.pains[:2]
+                ]
             return []
         if short_video:
+            if nb:
+                return [
+                    (f"why i chose {alt} instead of {b}", "switching_narrative")
+                    for alt in slots.alternatives[:2]
+                ]
             return [
                 (f"pov i stopped buying {b}", "switching_narrative"),
                 (f"why i quit {b}", "switching_narrative"),
+            ]
+        if nb:
+            return [
+                (f"chose {alt} over {b} reasons", "switching_narrative")
+                for alt in slots.alternatives[:3]
             ]
         return [
             (f"why i switched from {b} to {alt}", "switching_narrative")
@@ -330,6 +440,19 @@ def _gen_archetype(
         return [(f"why is {b} declining", "question_thread")]
 
     if archetype == 6:  # counter_evidence — MANDATORY FALSIFIER
+        if nb:
+            # Category-mode falsifier: search for positive sentiment ABOUT
+            # the category instead of awkward "why i love real estate".
+            if short_video:
+                return [
+                    (f"happy {b} buyer story", "counter_evidence"),
+                    (f"{b} positive review", "counter_evidence"),
+                ]
+            return [
+                (f"{b} positive review", "counter_evidence"),
+                (f"why I'm happy with my {b}", "counter_evidence"),
+                (f"satisfied {b} customer experience", "counter_evidence"),
+            ]
         if short_video:
             return [
                 (f"defending {b}", "counter_evidence"),
@@ -374,6 +497,167 @@ def _gen_archetype(
             asp_tag = slots.aspirations[0].replace(" ", "")
             out.append((f"#{cat_tag}{asp_tag}", "hashtag_trend"))
         return out
+
+    if archetype == 10:  # proxy_search — close-proxy expansion
+        # Fan out into geo+category+competitor combinations so a branded
+        # hypothesis (e.g. "Brigade Builders") also surfaces adjacent
+        # audience signal ("Bengaluru rental", "Whitefield property").
+        # Pure deterministic generator — no LLM call. Caps at ~8 queries
+        # to stay inside the per-channel budget.
+        proxies: List[Tuple[str, str]] = []
+        # Pick at most 2 geo anchors (city/country) — single cities are
+        # more specific than country-level; prefer the first hit.
+        geo_anchors: List[str] = []
+        for g in slots.geo[:3]:
+            gl = (g or "").strip().lower()
+            if gl and gl not in [a.lower() for a in geo_anchors]:
+                geo_anchors.append(g.title())
+        # Pick up to 3 category terms — these are the "topic" anchors.
+        cats = [c for c in slots.category_terms[:4] if c]
+        # No geo? Still produce some category proxies (no-geo path).
+        if not geo_anchors and not cats:
+            return []
+
+        if geo_anchors and cats:
+            # Geo × category — the canonical "Bengaluru real estate"
+            # pattern. Up to 3 combinations.
+            for ga in geo_anchors[:2]:
+                for ct in cats[:2]:
+                    proxies.append(
+                        (f"{ga} {ct}".strip(), "proxy_geo_category")
+                    )
+                    if len(proxies) >= 4:
+                        break
+                if len(proxies) >= 4:
+                    break
+
+        # Brand × geo (when both exist) — surfaces local coverage of
+        # the brand. "Brigade Builders Bengaluru reviews"
+        if geo_anchors and not slots.no_brand_mode:
+            proxies.append(
+                (f"{b} {geo_anchors[0]} reviews", "proxy_brand_geo")
+            )
+            if len(proxies) < 6 and slots.pains:
+                proxies.append(
+                    (f"{b} {geo_anchors[0]} {slots.pains[0]}", "proxy_brand_geo_pain")
+                )
+
+        # Competitor × geo — flushes out competitor-side signal that's
+        # often richer than the focal-brand search.
+        if geo_anchors and slots.alternatives:
+            proxies.append(
+                (f"{slots.alternatives[0]} {geo_anchors[0]} review",
+                 "proxy_competitor_geo")
+            )
+
+        # Category-only proxies (no geo) — useful when geo wasn't extracted.
+        if not geo_anchors and cats:
+            for ct in cats[:3]:
+                proxies.append((f"{ct} buyer review", "proxy_category"))
+                if slots.pains:
+                    proxies.append(
+                        (f"{ct} {slots.pains[0]}", "proxy_category_pain"))
+                if len(proxies) >= 4:
+                    break
+
+        # ── Phase 2-D — manifest-aware proxies ─────────────────────────
+        # When a ResearchContext is active (came from a Full Manifest JSON),
+        # add high-value proxy variants that exploit the manifest's
+        # structured enrichment: life-triggers, cohorts, brand attributes,
+        # pain verbatims.
+        try:
+            from .research_context import current_research_context
+            rc = current_research_context()
+        except Exception:
+            rc = None
+
+        if rc is not None and rc.is_active():
+            geo_first = geo_anchors[0] if geo_anchors else ""
+            brand = b if not slots.no_brand_mode else ""
+
+            # Brand × life-trigger — the canonical "property purchase
+            # after marriage" / "property purchase after retirement"
+            # pattern. Gold for situational_occasion hypotheses.
+            for trig in list(rc.life_triggers)[:3]:
+                if not trig:
+                    continue
+                if brand:
+                    if geo_first:
+                        proxies.append((
+                            f"{brand} {geo_first} after {trig}".strip(),
+                            "proxy_brand_lifetrigger",
+                        ))
+                    else:
+                        proxies.append((
+                            f"{brand} after {trig}", "proxy_brand_lifetrigger",
+                        ))
+                # Even no-brand: "real estate after marriage" surfaces
+                # situational-context content from forums/news.
+                if cats:
+                    proxies.append((
+                        f"{cats[0]} after {trig}", "proxy_category_lifetrigger",
+                    ))
+
+            # Brand × cohort — "Brigade Group for HNI",
+            # "Brigade Group for salaried 35-50". These often hit
+            # broker / consultancy pages with cohort-specific reviews.
+            for cohort in list(rc.target_cohorts)[:3]:
+                if not cohort or not brand:
+                    continue
+                proxies.append((
+                    f"{brand} for {cohort}", "proxy_brand_cohort",
+                ))
+
+            # Brand × brand-attribute (counter-evidence variants for
+            # supports-side recall). "Brigade Group trust" pulls positive
+            # press; "Brigade Group quality" pulls testimonials.
+            for attr in list(rc.brand_attributes)[:2]:
+                if not attr or not brand:
+                    continue
+                proxies.append((
+                    f"{brand} {attr}", "proxy_brand_attribute",
+                ))
+
+            # Pain-verbatim queries — the client's own words. "low site
+            # visit conversion real estate India" surfaces the same
+            # complaint discussed by other brokers / agents on forums.
+            # Conservative: only when the verbatim is a clean phrase
+            # (not a "Yes, it is more or less the same" filler).
+            for verbatim in list(rc.pain_verbatims)[:2]:
+                v = (verbatim or "").strip().lower()
+                # Skip filler answers
+                if not v or len(v) < 12 or v.startswith(("yes", "no", "maybe", "i think")):
+                    continue
+                if cats:
+                    proxies.append((
+                        f"{cats[0]} {v[:50]}".strip(),
+                        "proxy_pain_verbatim",
+                    ))
+
+            # Competitor full crossproduct — beyond the brand-vs-top-1
+            # competitor that the comparison archetype already produces,
+            # generate brand-vs-each-additional-competitor explicitly.
+            for comp in list(rc.competitors)[1:4]:  # skip [0] (already covered)
+                if not comp or not brand:
+                    continue
+                proxies.append((
+                    f"{brand} vs {comp.lower()} comparison",
+                    "proxy_competitor_pair",
+                ))
+
+        # Short-video adjustment — drop the "reviews" suffix (cringe on
+        # TikTok/Shorts); use punchier search phrases.
+        if short_video:
+            sv_proxies: List[Tuple[str, str]] = []
+            for txt, sig in proxies[:8]:
+                sv = txt.replace(" reviews", "").replace(" review", "")
+                sv_proxies.append((sv, sig))
+            proxies = sv_proxies
+
+        # Cap raised from 8 → 14 because the manifest-driven proxies are
+        # the highest-value queries — we don't want to drop them just to
+        # keep budget tight.
+        return proxies[:14]
 
     return []
 
@@ -477,13 +761,43 @@ def _ensure_falsifier(
     slots: _Slots,
     geo_proxies: List[str],
 ) -> List[TypedQuery]:
-    """Inject a counter_evidence query if none present. Falsifier is MANDATORY."""
+    """Inject a counter_evidence query if none present. Falsifier is MANDATORY.
+
+    Phase 1.5 — channel-aware falsifier templates. The literal "why i love X"
+    phrase only makes sense on opinion-rich channels (Reddit, Quora, YouTube,
+    Substack). On marketplace / news / google_paa, that phrase returns zero
+    results and burns query budget. Use channel-appropriate counter-evidence
+    phrasings instead.
+    """
     if any(q.falsifier for q in queries):
         return queries
     short_video = channel in SHORT_VIDEO_CHANNELS
     if not slots.brand:
         return queries
-    text = f"defending {slots.brand}" if short_video else f"why i love {slots.brand}"
+
+    # Channel-tailored counter-evidence phrasing
+    b = slots.brand
+    if short_video:
+        text = f"defending {b}"
+    elif channel == "marketplace":
+        # Marketplace surfaces reviews + product pages. The counter-evidence
+        # signal here is positive reviews / endorsements, not "I love it"
+        # blog posts.
+        text = f"{b} positive review"
+    elif channel == "news":
+        # News surfaces journalist-authored counter-narratives — accolades,
+        # awards, defenses against bad press.
+        text = f"{b} award OR endorsement"
+    elif channel == "google_paa":
+        # PAA returns question forms — phrase the falsifier as a question.
+        text = f"why is {b} good"
+    elif channel == "google_related":
+        text = f"{b} review positive"
+    else:
+        # Reddit / Quora / Substack / YouTube / Google web — opinion-rich,
+        # original first-person template still works.
+        text = f"why i love {b}"
+
     queries.append(
         TypedQuery(
             text=text,

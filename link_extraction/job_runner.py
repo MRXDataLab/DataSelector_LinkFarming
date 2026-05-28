@@ -169,6 +169,10 @@ def create_job(
     max_triage: int = 30,
     triage_strictness: str = "liberal",
     backend_preferences: Optional[Any] = None,
+    skip_triage: bool = False,
+    research_context: Optional[Any] = None,
+    skip_synthesis: bool = True,
+    max_synthesis_links: int = 12,
 ) -> str:
     """Register a new job and kick off the pipeline as a background task.
 
@@ -198,6 +202,10 @@ def create_job(
             max_triage=max_triage,
             triage_strictness=triage_strictness,
             backend_preferences=backend_preferences,
+            skip_triage=skip_triage,
+            research_context=research_context,
+            skip_synthesis=skip_synthesis,
+            max_synthesis_links=max_synthesis_links,
         ),
         name=f"pipeline-{job_id}",
     )
@@ -212,6 +220,10 @@ async def _run_job(
     max_triage: int,
     triage_strictness: str = "liberal",
     backend_preferences: Optional[Any] = None,
+    skip_triage: bool = False,
+    research_context: Optional[Any] = None,
+    skip_synthesis: bool = True,
+    max_synthesis_links: int = 12,
 ) -> None:
     """Background task body — drives one PipelineResult to completion."""
     state.status = "running"
@@ -231,6 +243,10 @@ async def _run_job(
             job_id=state.job_id,
             triage_strictness=triage_strictness,
             backend_preferences=backend_preferences,
+            skip_triage=skip_triage,
+            research_context=research_context,
+            skip_synthesis=skip_synthesis,
+            max_synthesis_links=max_synthesis_links,
         )
         state.result = result
         if result.error:

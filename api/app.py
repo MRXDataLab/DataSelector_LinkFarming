@@ -159,6 +159,45 @@ async def _restore_from_memory() -> None:
         logging.getLogger(__name__).warning("memory restore failed: %s", e)
 
 
+@app.on_event("startup")
+async def _start_backend_recovery_loop() -> None:
+    """Phase 1.7-B — kick off the per-backend auto-recovery probe loop.
+
+    The loop wakes every 30s, finds backends whose cooldown has expired,
+    and fires a minimal probe query at each. On success → flip to ok and
+    signal any hard-waiting callers. On failure → exponential backoff
+    extends the cooldown. Nothing operator-visible needs to happen for
+    transient outages (Brave 402, headless CAPTCHA) to self-heal.
+    """
+    try:
+        import asyncio
+        from link_extraction import backend_recovery
+        backend_recovery.start(asyncio.get_event_loop())
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "backend recovery loop failed to start: %s", e,
+        )
+
+
+@app.on_event("shutdown")
+async def _stop_backend_recovery_loop() -> None:
+    try:
+        from link_extraction import backend_recovery
+        backend_recovery.stop()
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
+async def _close_body_fetcher_session() -> None:
+    """Phase 3 — close the shared aiohttp session used by body_fetcher."""
+    try:
+        from link_extraction import body_fetcher
+        await body_fetcher._close_session()
+    except Exception:
+        pass
+
+
 # ─── Request models ──────────────────────────────────────────────────────────
 
 
@@ -186,6 +225,26 @@ class StartRequest(BaseModel):
                     "['google_free', 'brave', 'duckduckgo']. Default = all "
                     "enabled, google_free first. Channels that use official "
                     "APIs (youtube_shorts, youtube, trends) are unaffected.",
+    )
+    skip_triage: bool = Field(
+        False,
+        description="Discovery-only mode: run L0-L5 (decompose, score, "
+                    "query, discover, dedup) but skip L6 triage entirely. "
+                    "All links get verdict='unclassified'. Saves LLM + "
+                    "YouTube API credits. Use for testing link diversity.",
+    )
+    # Phase 3 — synthesis stages
+    enable_synthesis: bool = Field(
+        False,
+        description="Phase 3 — when True, runs L6.5 (per-link verbatim "
+                    "quote extraction) + L7 (per-hypothesis synthesis "
+                    "paragraph). Adds ~$0.01-0.05 per hypothesis on top of "
+                    "triage. No-op if skip_triage=True.",
+    )
+    max_synthesis_links: int = Field(
+        12, ge=1, le=40,
+        description="Cap on supports + refutes links sent to quote extraction. "
+                    "Higher = richer synthesis but more LLM cost.",
     )
 
 
@@ -419,6 +478,9 @@ async def start_job(req: StartRequest) -> StartResponse:
         max_triage=req.max_triage,
         triage_strictness=req.triage_strictness,
         backend_preferences=prefs,
+        skip_triage=req.skip_triage,
+        skip_synthesis=not req.enable_synthesis,
+        max_synthesis_links=req.max_synthesis_links,
     )
     state = get_job(job_id)
     assert state is not None
@@ -539,6 +601,9 @@ async def job_results(
             verdict: [_link_to_dict(lk) for lk in links]
             for verdict, links in result.grouped.items()
         },
+        # Phase 3 — synthesis output (None when synthesis disabled)
+        "synthesis": result.synthesis,
+        "quotes_by_url": result.quotes_by_url,
     }
 
     if download:
@@ -625,6 +690,50 @@ async def registry_status() -> Dict[str, Any]:
     return {
         "available_channels": list(reg.available_channels()),
     }
+
+
+@app.get("/api/data-selection/backend-health")
+async def backend_health_status() -> Dict[str, Any]:
+    """Live per-backend status snapshot (Phase 1 diagnostic surface).
+
+    Returns:
+      {
+        "any_healthy": bool,
+        "any_blocked": bool,
+        "backends": {
+          "brave": {status, message, cooldown_seconds_remaining, success_count, failure_count, ...},
+          "duckduckgo": {...},
+          "headless_google": {...},
+          "youtube": {...},
+        },
+        "generated_at": ISO-8601,
+      }
+
+    Use this to diagnose "no links returned" runs — if Brave is
+    `quota_exhausted`, headless is `captcha_cooldown`, etc, you'll see
+    it here instead of guessing.
+    """
+    # Touch the singletons so their init-time health reports have fired
+    # at least once (e.g. missing_key on Brave the first time we look).
+    try:
+        from link_extraction.backends.registry import (
+            get_brave, get_ddg, get_headless,
+        )
+        from link_extraction.discoverers.youtube_shorts import get_youtube_shorts
+        from link_extraction.discoverers.youtube import get_youtube
+        get_brave()
+        get_ddg()
+        get_headless()
+        # YT discoverers report their own backend_health on init — touch
+        # them so the youtube pill flips off "unknown" without needing a
+        # batch run first.
+        get_youtube_shorts()
+        get_youtube()
+    except Exception as e:
+        log.warning("backend_health probe init failed: %s", e)
+
+    from link_extraction.backend_health import snapshot
+    return snapshot()
 
 
 # ─── Memory endpoints (Step 14a) — surface persisted history ────────────────
@@ -724,6 +833,19 @@ class BatchStartRequest(BaseModel):
         description="Backend priority + on/off, applied to every hypothesis. "
                     "Subset of ['google_free', 'brave', 'duckduckgo']. None = all enabled.",
     )
+    skip_triage: bool = Field(
+        False,
+        description="Discovery-only mode for the entire batch. Skips L6 triage "
+                    "— all links get verdict='unclassified'. Saves API credits.",
+    )
+    # Phase 3 — synthesis stages
+    enable_synthesis: bool = Field(
+        False,
+        description="Run L6.5 (quote extraction) + L7 (per-hypothesis "
+                    "synthesis paragraph) on every batch member. No-op if "
+                    "skip_triage=True.",
+    )
+    max_synthesis_links: int = Field(12, ge=1, le=40)
 
 
 @app.post("/api/data-selection/batch/start")
@@ -755,6 +877,9 @@ async def batch_start(req: BatchStartRequest) -> Dict[str, Any]:
             concurrency=req.concurrency,
             triage_strictness=req.triage_strictness,
             backend_preferences=prefs,
+            skip_triage=req.skip_triage,
+            skip_synthesis=not req.enable_synthesis,
+            max_synthesis_links=req.max_synthesis_links,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -771,6 +896,172 @@ async def batch_start(req: BatchStartRequest) -> Dict[str, Any]:
             {"row_index": e.row_index, "message": e.message}
             for e in parsed.errors
         ],
+    }
+
+
+# ─── Phase 2 — Full Manifest JSON ingestion path ─────────────────────────────
+
+
+@app.post("/api/data-selection/manifest/preview")
+async def manifest_preview(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """Parse a Full_Manifest_*.json and return a preview.
+
+    UI uses this to show the analyst:
+      • extracted competitors (with edit handles)
+      • inferred geo + cohorts + life-triggers + brand attributes
+      • per-dimension shift signals
+      • all parsed hypotheses (with core-problem grouping)
+      • non-fatal warnings (missing keys, bad row shapes)
+
+    The user MUST supply their own brand name on the /start call —
+    the manifest never names it (the client is the brand owner).
+    """
+    from link_extraction.manifest_io import parse_manifest_json, preview_summary
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(400, "expected a .json file")
+    raw = await file.read()
+    try:
+        blob = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"JSON parse failed: {type(e).__name__}: {e}")
+    parsed = parse_manifest_json(blob)
+    summary = preview_summary(parsed)
+    # Echo the raw manifest text back so the UI can pass it through to
+    # /manifest/start without re-uploading the file. Compact JSON to keep
+    # the round-trip cheap (~50KB typical).
+    summary["raw_manifest_json"] = json.dumps(blob, separators=(",", ":"))
+    return summary
+
+
+class ManifestStartRequest(BaseModel):
+    raw_manifest_json: str = Field(
+        ...,
+        description="The raw JSON text of the manifest (round-tripped from "
+                    "/manifest/preview).",
+    )
+    client_brand_name: str = Field(
+        ...,
+        min_length=1, max_length=120,
+        description="REQUIRED — the user's own brand name. The manifest "
+                    "never names it; user types/confirms in the UI. Used as "
+                    "the canonical primary_entity for every hypothesis.",
+    )
+    window_label: WindowLabel = "1y"
+    use_llm: bool = True
+    max_triage: int = Field(30, ge=1, le=100)
+    concurrency: int = Field(BATCH_CONCURRENCY, ge=1, le=10)
+    triage_strictness: Literal["strict", "balanced", "liberal"] = "liberal"
+    backends: Optional[List[str]] = None
+    skip_triage: bool = Field(
+        False,
+        description="Discovery-only mode — applied to every hypothesis in "
+                    "the manifest.",
+    )
+    # Optional: let the UI override the extracted context before running.
+    # If supplied, these replace the manifest's regex extractions before
+    # we build the ResearchContext. Useful for editing competitor lists,
+    # adding cohorts the manifest missed, etc.
+    competitors_override: Optional[List[str]] = None
+    geo_hints_override: Optional[List[str]] = None
+    target_cohorts_override: Optional[List[str]] = None
+    life_triggers_override: Optional[List[str]] = None
+    # Phase 3 — synthesis toggles
+    enable_synthesis: bool = Field(
+        False,
+        description="Run quote extraction + per-hypothesis synthesis. "
+                    "Adds ~$0.01-0.05 per hypothesis on top of triage.",
+    )
+    max_synthesis_links: int = Field(12, ge=1, le=40)
+
+
+@app.post("/api/data-selection/manifest/start")
+async def manifest_start(req: ManifestStartRequest) -> Dict[str, Any]:
+    """Start a batch from a Full Manifest JSON.
+
+    Reuses the existing batch_runner — the manifest's hypotheses are
+    converted into the same ParsedBatch shape the CSV path produces, then
+    fed in with an attached ResearchContext that propagates brand /
+    competitors / geo / cohorts / life triggers / brand attributes into
+    every member-job's decomposer + synthesizer.
+    """
+    from link_extraction.manifest_io import parse_manifest_json
+    from link_extraction.research_context import ResearchContext
+    from link_extraction.csv_io import ParsedBatch, ParsedHypothesis
+
+    try:
+        blob = json.loads(req.raw_manifest_json)
+    except Exception as e:
+        raise HTTPException(400, f"raw_manifest_json invalid: {e}")
+
+    parsed_m = parse_manifest_json(blob)
+    if parsed_m.hypothesis_count == 0:
+        raise HTTPException(
+            400,
+            "no hypotheses parsed from manifest"
+            + (f"; warnings={parsed_m.warnings}" if parsed_m.warnings else ""),
+        )
+
+    # Build the ResearchContext — apply any UI-side overrides on top of
+    # what the parser extracted (so the user's edits in the preview modal
+    # take effect).
+    rc_dict = parsed_m.to_research_context(req.client_brand_name)
+    if req.competitors_override is not None:
+        rc_dict["competitors"] = [c.strip() for c in req.competitors_override if c.strip()]
+    if req.geo_hints_override is not None:
+        rc_dict["geo_hints"] = [g.strip() for g in req.geo_hints_override if g.strip()]
+    if req.target_cohorts_override is not None:
+        rc_dict["target_cohorts"] = [c.strip() for c in req.target_cohorts_override if c.strip()]
+    if req.life_triggers_override is not None:
+        rc_dict["life_triggers"] = [t.strip() for t in req.life_triggers_override if t.strip()]
+    research_ctx = ResearchContext.from_dict(rc_dict)
+
+    # Convert the manifest hypotheses into ParsedBatch shape so we can
+    # reuse the existing batch_runner unchanged.
+    parsed_batch = ParsedBatch()
+    for mh in parsed_m.hypotheses:
+        parsed_batch.hypotheses.append(ParsedHypothesis(
+            row_index=mh.row_index,
+            hypothesis=mh.hypothesis,
+            core_problem_id=mh.core_problem_id,
+            window_label_override=mh.window_label_override,
+            max_triage_override=mh.max_triage_override,
+        ))
+        parsed_batch.core_problems.setdefault(mh.core_problem_id, []).append(mh.row_index)
+    parsed_batch.core_problem_statements = dict(parsed_m.core_problems)
+
+    prefs = None
+    if req.backends is not None:
+        clean = [b for b in req.backends if b in ALL_BACKENDS]
+        if not clean:
+            raise HTTPException(400, "At least one backend must be enabled.")
+        prefs = BackendPreferences(enabled=clean)
+
+    try:
+        batch_id = create_batch(
+            parsed_batch,
+            default_window_label=req.window_label,
+            default_max_triage=req.max_triage,
+            use_llm=req.use_llm,
+            concurrency=req.concurrency,
+            triage_strictness=req.triage_strictness,
+            backend_preferences=prefs,
+            skip_triage=req.skip_triage,
+            research_context=research_ctx,
+            skip_synthesis=not req.enable_synthesis,
+            max_synthesis_links=req.max_synthesis_links,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    state = get_batch(batch_id)
+    assert state is not None
+    return {
+        "batch_id": batch_id,
+        "status": state.status,
+        "member_count": len(state.members),
+        "core_problem_count": len(state.core_problems),
+        "concurrency": state.concurrency,
+        "research_context": research_ctx.to_dict(),
+        "bundle_id": parsed_m.bundle_id,
     }
 
 

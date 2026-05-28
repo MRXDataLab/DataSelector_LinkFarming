@@ -33,12 +33,18 @@ _ESSAY_PATH_RE = re.compile(r"/p/[^/?#]+", re.IGNORECASE)
 
 
 class SubstackDiscoverer(Discoverer):
-    """Brave-backed Substack essay search."""
+    """Backend-agnostic Substack essay search via `site:*.substack.com`."""
 
     channel_id = "substack"
 
     def __init__(self) -> None:
-        self.available = get_brave().available
+        # Phase 1 fix: any web-search backend can do `site:` rewriting.
+        from ..backends.registry import get_ddg, get_headless
+        self.available = (
+            get_brave().available
+            or get_ddg().available
+            or get_headless().available
+        )
 
     async def discover(
         self,
