@@ -964,107 +964,30 @@
     </div>
   </details>
 
-  <details id="batch-section" class="batch-section">
-    <summary>
-      <span>📤 Batch upload — run many hypotheses from one CSV</span>
-      <span class="chev">›</span>
-    </summary>
+  <!-- Batch progress + downloads (shared) — the legacy CSV intake was
+       removed since the Full Manifest JSON path above covers every CSV
+       workflow with richer context. This panel is REUSED by the manifest
+       runner via subscribeBatchEvents(). -->
+  <section id="batch-progress-section" class="batch-section">
     <div class="body">
-      <label class="drop-zone" id="drop-zone">
-        <div style="font-size: 14px; color: var(--text);">
-          Drag a CSV here, or <span style="color: var(--teal); text-decoration: underline;">click to browse</span>
+      <!-- Hidden form controls retained as no-ops so legacy CSV JS that
+           queries $("batch-window")/etc. doesn't NPE. They are never
+           rendered and never affect behavior. -->
+      <div style="display: none;">
+        <input id="batch-window" type="hidden" value="1y" />
+        <input id="batch-max-triage" type="hidden" value="30" />
+        <input id="batch-concurrency" type="hidden" value="3" />
+        <select id="batch-strictness"><option value="liberal" selected></option></select>
+        <input id="batch-use-llm" type="checkbox" checked />
+        <input id="batch-skip-triage" type="checkbox" />
+        <div id="batch-backend-toggles">
+          <label class="backend-toggle on" data-backend="google_free"><input type="checkbox" checked /></label>
+          <label class="backend-toggle on" data-backend="brave"><input type="checkbox" checked /></label>
+          <label class="backend-toggle on" data-backend="duckduckgo"><input type="checkbox" checked /></label>
         </div>
-        <div class="hint">
-          Required column: <code>statement</code>. Optional: hypothesis_id, core_problem_id,
-          dimension, force_assignment, expected_signals (pipe-delimited), expected_counter_signals,
-          contrarian_pair_id, rationale, window_label, max_triage.
-        </div>
-        <div class="hint">
-          <a href="/sample_batch.csv" download style="color: var(--teal);">📥 download sample_batch.csv</a>
-        </div>
-        <div class="filename" id="csv-filename"></div>
-        <input type="file" id="csv-input" accept=".csv,text/csv" />
-      </label>
-
-      <div class="batch-controls">
-        <div>
-          <label for="batch-window">Time window</label>
-          <select id="batch-window">
-            <option value="7d">7 days</option>
-            <option value="30d">30 days</option>
-            <option value="90d">90 days</option>
-            <option value="1y" selected>1 year</option>
-            <option value="5y">5 years</option>
-          </select>
-        </div>
-        <div>
-          <label for="batch-max-triage">Triage budget (per hyp)</label>
-          <input id="batch-max-triage" type="number" value="30" min="1" max="100" />
-        </div>
-        <div>
-          <label for="batch-concurrency">Concurrency</label>
-          <input id="batch-concurrency" type="number" value="3" min="1" max="10" />
-        </div>
-        <div>
-          <label for="batch-strictness">Triage strictness</label>
-          <select id="batch-strictness">
-            <option value="strict">Strict</option>
-            <option value="balanced">Balanced</option>
-            <option value="liberal" selected>Liberal</option>
-          </select>
-        </div>
-      </div>
-
-      <div style="margin-top: 10px;">
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-          <input type="checkbox" id="batch-use-llm" checked style="width: auto;" />
-          <span style="font-size: 12px;">Use LLM (Gemini) for slot-fill + verdicts</span>
-        </label>
-      </div>
-      <div style="margin-top: 8px;">
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #1a2332; border: 1px solid #f0b429; border-radius: 6px; padding: 8px 12px;">
-          <input type="checkbox" id="batch-skip-triage" style="width: auto;" />
-          <span style="font-weight: 600; color: #f0b429; font-size: 12px;">Discovery only (skip triage)</span>
-        </label>
-        <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
-          Collect links from all channels without LLM scoring. Saves API credits.
-        </div>
-      </div>
-
-      <div style="margin-top: 10px;">
-        <label>Search backends (priority order, top → bottom)</label>
-        <div class="backend-toggles" id="batch-backend-toggles">
-          <label class="backend-toggle on" data-backend="google_free">
-            <input type="checkbox" checked />
-            <span class="dot"></span>
-            <span>Google (free)</span>
-            <span class="pri">#1</span>
-          </label>
-          <label class="backend-toggle on" data-backend="brave">
-            <input type="checkbox" checked />
-            <span class="dot"></span>
-            <span>Brave</span>
-            <span class="pri">#2</span>
-          </label>
-          <label class="backend-toggle on" data-backend="duckduckgo">
-            <input type="checkbox" checked />
-            <span class="dot"></span>
-            <span>DuckDuckGo</span>
-            <span class="pri">#3</span>
-          </label>
-        </div>
-        <div style="color: var(--text-faint); font-size: 11px; margin-top: 4px;">
-          Applied to every hypothesis in the batch. Same channels used as the single-hyp form.
-        </div>
-      </div>
-
-      <div id="batch-preview" class="preview" hidden></div>
-
-      <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+        <div id="batch-preview"></div>
         <button id="batch-start" disabled>Run batch</button>
-        <button id="batch-clear" style="background: var(--bg); color: var(--text-dim); border: 1px solid var(--border);">
-          Clear
-        </button>
+        <button id="batch-clear"></button>
       </div>
 
       <div id="batch-running" hidden>
@@ -1156,7 +1079,7 @@
         </div>
       </div>
     </div>
-  </details>
+  </section>
 
   <!-- ── INPUT PANEL (single hypothesis) ────────────────────────────────── -->
   <section class="panel">
