@@ -354,6 +354,23 @@ class HeadlessGoogleBackend(SearchBackend):
                 or "/sorry/" in (page.url or "")
             ):
                 self._enter_cooldown()
+                # CRITICAL — burn the browser context too. Google has
+                # marked this session's cookies + fingerprint as bot-
+                # suspected; reusing it on the next retry guarantees
+                # another CAPTCHA and traps us in a forever-cooldown
+                # loop. Closing the page first (so `finally` doesn't
+                # error on a dead ctx), then resetting the persistent
+                # context forces the next call to rebuild Chromium with
+                # a freshly-randomized UA + viewport + zero cookies.
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                await self._reset_context()
+                log.info(
+                    "Headless Google context reset after CAPTCHA — next "
+                    "probe will use fresh fingerprint + clean cookies"
+                )
                 return []
 
             if vertical == "paa":
