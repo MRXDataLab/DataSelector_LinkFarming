@@ -670,9 +670,18 @@
     background: var(--teal); color: var(--bg); font-weight: 700;
   }
   .mode-toggle button:not(.active):hover { color: var(--text); }
-  /* When in Safe mode, dim the Google pill so users see it's intentionally off. */
+  /* Per-mode pill dimming — strikethrough the backends each mode skips
+     so users see at-a-glance what's intentionally off vs. broken. */
   body.mode-safe .backend-pill[data-backend="headless_google"] {
     opacity: 0.35; text-decoration: line-through;
+  }
+  body.mode-demo .backend-pill[data-backend="headless_google"],
+  body.mode-demo .backend-pill[data-backend="brave"] {
+    opacity: 0.35; text-decoration: line-through;
+  }
+  /* Demo button gets a softer green so it reads as "free / cost-safe". */
+  .mode-toggle button[data-mode="demo"].active {
+    background: #34d399; color: var(--bg);
   }
 
   /* ── Past-runs header dropdown ───────────────────────────────────────── */
@@ -828,7 +837,8 @@
       <span class="backend-pill idle" data-backend="headless_google"><span class="dot"></span>google</span>
       <span class="backend-pill idle" data-backend="youtube"><span class="dot"></span>yt</span>
     </div>
-    <div class="mode-toggle" id="mode-toggle" title="Backend mode — Safe skips Google entirely (no CAPTCHA cooldowns). Full uses Google + Brave + DDG.">
+    <div class="mode-toggle" id="mode-toggle" title="Backend mode — Demo (DDG only, zero paid quota) · Safe (Brave + DDG, no Google CAPTCHA) · Full (Google + Brave + DDG).">
+      <button type="button" data-mode="demo">💚 Demo</button>
       <button type="button" data-mode="safe">🛡️ Safe</button>
       <button type="button" data-mode="full">⚡ Full</button>
     </div>
@@ -2130,21 +2140,31 @@ if (pastRunsTrigger && pastRunsPopover) {
   });
 }
 
-// ── Backend mode toggle (Safe vs Full) ──────────────────────────────────
-// Safe   = ["brave", "duckduckgo"]  — skip Google entirely (no CAPTCHA noise)
-// Full   = ["google_free", "brave", "duckduckgo"] — current default
+// ── Backend mode toggle (Demo / Safe / Full) ────────────────────────────
+// Demo  = ["duckduckgo"]                              — DDG only, $0 cost,
+//                                                       perfect for live
+//                                                       demos that mustn't
+//                                                       burn paid quota.
+// Safe  = ["brave", "duckduckgo"]                     — skip Google
+//                                                       (no CAPTCHA noise).
+// Full  = ["google_free", "brave", "duckduckgo"]      — all three backends.
 // Persisted in localStorage; defaults to "safe" so first-time users don't
 // inherit the broken Google path.
 const MODE_KEY = "outtlyr.backend_mode";
+const VALID_MODES = new Set(["demo", "safe", "full"]);
 function getBackendMode() {
-  return localStorage.getItem(MODE_KEY) || "safe";
+  const stored = localStorage.getItem(MODE_KEY);
+  return VALID_MODES.has(stored) ? stored : "safe";
 }
 function setBackendMode(mode) {
+  if (!VALID_MODES.has(mode)) mode = "safe";
   localStorage.setItem(MODE_KEY, mode);
   renderBackendMode();
 }
 function renderBackendMode() {
   const mode = getBackendMode();
+  // Mutually-exclusive body classes drive pill dimming.
+  document.body.classList.toggle("mode-demo", mode === "demo");
   document.body.classList.toggle("mode-safe", mode === "safe");
   document.body.classList.toggle("mode-full", mode === "full");
   document.querySelectorAll("#mode-toggle button").forEach(b => {
@@ -2152,9 +2172,12 @@ function renderBackendMode() {
   });
 }
 function getBackendModeBackends() {
-  return getBackendMode() === "safe"
-    ? ["brave", "duckduckgo"]
-    : ["google_free", "brave", "duckduckgo"];
+  switch (getBackendMode()) {
+    case "demo": return ["duckduckgo"];
+    case "full": return ["google_free", "brave", "duckduckgo"];
+    case "safe":
+    default:     return ["brave", "duckduckgo"];
+  }
 }
 document.querySelectorAll("#mode-toggle button").forEach(b => {
   b.addEventListener("click", () => setBackendMode(b.dataset.mode));
