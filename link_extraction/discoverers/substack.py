@@ -52,8 +52,9 @@ class SubstackDiscoverer(Discoverer):
         window: TimeWindow,
         count: int = 10,
     ) -> List[DiscoveredLink]:
-        if not get_brave().available:
-            return []
+        # No Brave-only hard gate — `site:*.substack.com` is a plain query
+        # operator that DDG and headless Google honour too. The `.available`
+        # check in __init__ already covers the "no backend at all" case.
 
         # Phase 2 — pool-first. Substack lives under varying subdomains
         # so we use the `*.substack.com` wildcard matcher.

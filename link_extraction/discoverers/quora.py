@@ -70,8 +70,13 @@ class QuoraDiscoverer(Discoverer):
         window: TimeWindow,
         count: int = 10,
     ) -> List[DiscoveredLink]:
-        if not get_brave().available:
-            return []
+        # No Brave-only hard gate here — `site:quora.com` works on DDG
+        # and headless Google too, so let `search_with_fallback` route
+        # the request through whatever backend is currently healthy.
+        # (The previous `if not get_brave().available: return []` killed
+        # this channel when Brave hit its quota even though DDG/Google
+        # could have served it. The `.available` check in __init__
+        # already guards the "no backend at all" case.)
 
         # Phase 2 — consult the shared DiscoveryPool first. The
         # orchestrator's prequery often surfaces enough quora.com URLs

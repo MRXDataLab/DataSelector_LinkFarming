@@ -198,14 +198,26 @@ class MarketplaceDiscoverer(Discoverer):
         / travel hosts. Yields fewer results overall than the Brave path,
         but yields >0 — which is the point.
         """
+        # Phase 2 — pool-first. Marketplace hits a wide host set so we
+        # use the predicate variant; same `_is_marketplace_url` test we
+        # apply post-fetch below. If the pool already has enough rows,
+        # skip the dedicated call entirely.
+        raw: List = []
+        from ..discovery_pool import current_pool
+        pool = current_pool()
+        if pool is not None:
+            raw = pool.pick_by_predicate(
+                lambda r: _is_marketplace_url(r.url), count * 2,
+            )
         # Over-fetch heavily since we'll throw away non-marketplace links
-        raw = await search_with_fallback(
-            query.text,
-            vertical="web",
-            count=count * 4,
-            window=window,
-            min_results=1,
-        )
+        if len(raw) < count:
+            raw = await search_with_fallback(
+                query.text,
+                vertical="web",
+                count=count * 4,
+                window=window,
+                min_results=1,
+            )
         out: List[DiscoveredLink] = []
         seen: set[str] = set()
         for r in raw:
