@@ -197,16 +197,26 @@ class RedditDiscoverer(Discoverer):
     async def _discover_brave(
         self, query: TypedQuery, window: TimeWindow, count: int
     ) -> List[DiscoveredLink]:
+        # Phase 2 — pool-first. The shared web prequery typically surfaces
+        # plenty of reddit.com results without needing a forums-vertical
+        # call. Fall through to the original Brave forums search if the
+        # pool came up short.
+        raw: List = []
+        from ..discovery_pool import current_pool
+        pool = current_pool()
+        if pool is not None:
+            raw = pool.pick_for_host_patterns(["reddit.com"], count * 2)
         # Brave's "forums" vertical biases the query to `site:reddit.com OR
         # site:quora.com`. We further filter on the Reddit host so this
         # discoverer doesn't leak Quora results into the Reddit bucket.
-        raw = await search_with_fallback(
-            query.text,
-            vertical="forums",
-            count=count * 2,  # over-fetch since we'll filter to reddit only
-            window=window,
-            min_results=count,
-        )
+        if len(raw) < count:
+            raw = await search_with_fallback(
+                query.text,
+                vertical="forums",
+                count=count * 2,  # over-fetch since we'll filter to reddit only
+                window=window,
+                min_results=count,
+            )
         links: List[DiscoveredLink] = []
         for r in raw:
             host = r.url.split("/")[2].lower() if "://" in r.url else ""

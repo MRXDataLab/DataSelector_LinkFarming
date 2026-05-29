@@ -55,13 +55,21 @@ class SubstackDiscoverer(Discoverer):
         if not get_brave().available:
             return []
 
-        raw = await search_with_fallback(
-            f"{query.text} site:substack.com",
-            vertical="web",
-            count=count * 2,
-            window=window,
-            min_results=1,
-        )
+        # Phase 2 — pool-first. Substack lives under varying subdomains
+        # so we use the `*.substack.com` wildcard matcher.
+        raw: List = []
+        from ..discovery_pool import current_pool
+        pool = current_pool()
+        if pool is not None:
+            raw = pool.pick_for_host_patterns(["*.substack.com"], count * 2)
+        if len(raw) < count:
+            raw = await search_with_fallback(
+                f"{query.text} site:substack.com",
+                vertical="web",
+                count=count * 2,
+                window=window,
+                min_results=1,
+            )
 
         out: List[DiscoveredLink] = []
         seen: set[str] = set()

@@ -79,14 +79,29 @@ class GoogleWebDiscoverer(Discoverer):
         window: TimeWindow,
         count: int = 10,
     ) -> List[DiscoveredLink]:
-        # Over-fetch then exclude channel-mismatched hosts.
-        raw = await search_with_fallback(
-            query.text,
-            vertical="web",
-            count=count * 2,
-            window=window,
-            min_results=1,
-        )
+        # Phase 2 — `google_web` is exactly what the orchestrator's
+        # prequery already populated the pool with. We use the entire
+        # pool (no host filter) and let `_host_excluded` below trim
+        # the channel-overlapping hosts. The win here is dramatic:
+        # this is normally one of the highest-call discoverers, and
+        # when the pool has data the network call drops to zero.
+        raw: List = []
+        from ..discovery_pool import current_pool
+        pool = current_pool()
+        if pool is not None:
+            # Pull a broad slice; the post-filter loop below trims to
+            # `count` after dropping channel-mismatched hosts.
+            raw = pool.pick_by_predicate(lambda _r: True, count * 4)
+        # Over-fetch then exclude channel-mismatched hosts. Only run
+        # a fresh search when the pool didn't yield enough usable rows.
+        if len(raw) < count:
+            raw = await search_with_fallback(
+                query.text,
+                vertical="web",
+                count=count * 2,
+                window=window,
+                min_results=1,
+            )
         out: List[DiscoveredLink] = []
         seen: set[str] = set()
         for r in raw:

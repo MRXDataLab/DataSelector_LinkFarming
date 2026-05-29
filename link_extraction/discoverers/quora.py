@@ -73,13 +73,25 @@ class QuoraDiscoverer(Discoverer):
         if not get_brave().available:
             return []
 
-        raw = await search_with_fallback(
-            f"{query.text} site:quora.com",
-            vertical="web",
-            count=count * 2,  # over-fetch since /answer/ dupes collapse
-            window=window,
-            min_results=1,
-        )
+        # Phase 2 — consult the shared DiscoveryPool first. The
+        # orchestrator's prequery often surfaces enough quora.com URLs
+        # to satisfy this discoverer without a dedicated `site:quora.com`
+        # search. Need count * 2 to handle /answer/ dedupe.
+        raw: List = []
+        from ..discovery_pool import current_pool
+        pool = current_pool()
+        if pool is not None:
+            raw = pool.pick_for_host_patterns(["quora.com"], count * 2)
+        # Fall back / supplement with a dedicated search only when the
+        # pool didn't yield enough material.
+        if len(raw) < count:
+            raw = await search_with_fallback(
+                f"{query.text} site:quora.com",
+                vertical="web",
+                count=count * 2,
+                window=window,
+                min_results=1,
+            )
 
         out: List[DiscoveredLink] = []
         seen: set[str] = set()

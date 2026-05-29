@@ -1367,20 +1367,28 @@ const BACKEND_HINTS = {
 
 function renderBackendHealth(snapshot) {
   if (!snapshot || !snapshot.backends) return;
-  // ── Cache pill — show calls saved + hit rate once we have data ──
+  // ── Cache + pool pill — total backend calls saved across both
+  //    Phase 1 (LRU query cache) and Phase 2 (per-hypothesis pool).
   const sc = snapshot.search_cache;
-  if (sc && sc.enabled) {
-    const pill = $("cache-pill");
-    if (pill) {
-      // Hide until at least one lookup has happened (avoids noise on fresh start).
-      if ((sc.hits + sc.misses) > 0) {
-        pill.hidden = false;
-        $("cache-pill-saved").textContent = `${sc.calls_saved} saved`;
-        $("cache-pill-rate").textContent =
-          `(${(sc.hit_rate * 100).toFixed(0)}% hit · ${sc.size}/${sc.max_size})`;
-      } else {
-        pill.hidden = true;
-      }
+  const dp = snapshot.discovery_pool;
+  const pill = $("cache-pill");
+  if (pill && (sc || dp)) {
+    const cacheSaved = (sc && sc.enabled) ? (sc.calls_saved || 0) : 0;
+    const poolSaved = dp ? (dp.calls_saved_estimate || 0) : 0;
+    const totalSaved = cacheSaved + poolSaved;
+    const totalLookups = (sc ? sc.hits + sc.misses : 0);
+    if (totalSaved > 0 || totalLookups > 0) {
+      pill.hidden = false;
+      $("cache-pill-saved").textContent = `${totalSaved} saved`;
+      // Break down the source: cache hits + pool picks. Pool's
+      // "calls_saved_estimate" is the count of pool lookups that
+      // returned ≥ 1 result (and thus avoided a search call).
+      const parts = [];
+      if (sc && sc.enabled) parts.push(`${cacheSaved} cache`);
+      if (poolSaved > 0) parts.push(`${poolSaved} pool`);
+      $("cache-pill-rate").textContent = parts.length ? `(${parts.join(" + ")})` : "";
+    } else {
+      pill.hidden = true;
     }
   }
   const blocked = [];   // hard fail

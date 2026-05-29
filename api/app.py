@@ -735,9 +735,13 @@ async def backend_health_status() -> Dict[str, Any]:
 
     from link_extraction.backend_health import snapshot
     from link_extraction.backends import _query_cache
+    from link_extraction import discovery_pool
     snap = snapshot()
     # Attach search-cache stats so the UI can show "saved N calls".
     snap["search_cache"] = _query_cache.stats()
+    # Attach DiscoveryPool process totals so the UI can show how many
+    # discoverer calls were satisfied by the per-hypothesis pool.
+    snap["discovery_pool"] = discovery_pool.process_stats()
     return snap
 
 

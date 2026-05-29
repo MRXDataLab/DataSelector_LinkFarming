@@ -35,11 +35,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
+from .backends import search_with_fallback
 from .backends.preferences import (
     BackendPreferences,
     DEFAULT_PREFERENCES,
     reset_current_preferences,
     set_current_preferences,
+)
+from .discovery_pool import (
+    DiscoveryPool,
+    record_pool_close,
+    reset_current_pool,
+    set_current_pool,
 )
 from .cost_meter import (
     current_job_id as _current_job_id,
@@ -564,6 +571,59 @@ async def run_pipeline(
     emit(PipelineEvent(kind="stage_start", hypothesis_id=hyp_id, stage="L3_discover"))
     links_by_channel: Dict[ChannelId, List[DiscoveredLink]] = {}
 
+    # ── Phase 2 — prequery + DiscoveryPool ────────────────────────────────
+    # Run ONE consolidated Brave web search per hypothesis and stash the
+    # results so site-scoped discoverers (quora / substack / reddit /
+    # google_web / marketplace) can satisfy themselves from the shared
+    # pool instead of each making their own near-identical query. Pool
+    # is bound to a ContextVar so discoverers opt-in via
+    # `discovery_pool.current_pool()` — backwards-compatible (a `None`
+    # pool means "fall through to your own search").
+    pool = DiscoveryPool()
+    pool_token = set_current_pool(pool)
+    try:
+        # Pick the best general query — prefer the `google_web` channel's
+        # first query (it's already the broadest), else fall back to the
+        # decomposition's primary_entity + topic terms, else the raw
+        # hypothesis text.
+        prequery_text: Optional[str] = None
+        if "google_web" in queries_by_channel and queries_by_channel["google_web"]:
+            prequery_text = queries_by_channel["google_web"][0].text
+        elif decomp and getattr(decomp, "primary_entity", None):
+            prequery_text = decomp.primary_entity
+            topics = getattr(decomp, "topic_terms", []) or []
+            if topics:
+                prequery_text = f"{prequery_text} {' '.join(topics[:3])}"
+        else:
+            prequery_text = (hypothesis_text or "").strip()[:200]
+
+        if prequery_text:
+            try:
+                # One web + one news vertical call seeds the pool. Both
+                # go through search_with_fallback so the LRU cache still
+                # catches repeats across hypotheses.
+                prequery_web = await search_with_fallback(
+                    prequery_text,
+                    vertical="web",
+                    count=20,
+                    window=window,
+                    min_results=1,
+                )
+                added_web = pool.add_results(prequery_web, source_label="prequery_web")
+                emit(PipelineEvent(
+                    kind="channel_discovered", hypothesis_id=hyp_id, stage="L3_discover",
+                    data={
+                        "channel": "_prequery",
+                        "n_links": added_web,
+                        "skipped": False,
+                        "source": "web",
+                    },
+                ))
+            except Exception as e:
+                log.warning("prequery (web) failed for hyp=%s: %s", hyp_id, e)
+    except Exception as e:
+        log.warning("DiscoveryPool setup failed for hyp=%s: %s", hyp_id, e)
+
     async def _run_channel(channel: ChannelId, queries: List[TypedQuery]) -> None:
         discoverer = reg.get(channel)
         if discoverer is None or not discoverer.available:
@@ -605,12 +665,21 @@ async def run_pipeline(
         _run_channel(ch, qs) for ch, qs in queries_by_channel.items()
     ))
     total_discovered = sum(len(v) for v in links_by_channel.values())
+    # Roll up pool stats into the process-wide totals + unbind the
+    # ContextVar before we leave L3. Discoverers running outside the
+    # orchestrator (tests, ad-hoc) will see `current_pool() is None`
+    # and fall through to their own search path.
+    try:
+        record_pool_close(pool)
+    finally:
+        reset_current_pool(pool_token)
     emit(PipelineEvent(
         kind="stage_done", hypothesis_id=hyp_id, stage="L3_discover",
         data={
             "total_links": total_discovered,
             "links_per_channel": {ch: len(v) for ch, v in links_by_channel.items()},
             "channels_skipped": channels_skipped,
+            "pool_stats": pool.stats(),
         },
     ))
 
