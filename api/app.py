@@ -734,7 +734,11 @@ async def backend_health_status() -> Dict[str, Any]:
         log.warning("backend_health probe init failed: %s", e)
 
     from link_extraction.backend_health import snapshot
-    return snapshot()
+    from link_extraction.backends import _query_cache
+    snap = snapshot()
+    # Attach search-cache stats so the UI can show "saved N calls".
+    snap["search_cache"] = _query_cache.stats()
+    return snap
 
 
 # ─── Memory endpoints (Step 14a) — surface persisted history ────────────────

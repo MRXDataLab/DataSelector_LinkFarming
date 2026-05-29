@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 from .. import backend_health
 from ..models import QueryVertical, RawResult, TimeWindow
+from . import _query_cache
 from .base import SearchBackend
 from .brave import BraveBackend
 from .duckduckgo import DuckDuckGoBackend
@@ -136,16 +137,44 @@ async def search_with_fallback(
     # Per-vertical override: Brave-first for web/news/videos/forums.
     enabled_ids = _reorder_for_vertical(enabled_ids, vertical)
 
+    # ── Cache lookup ────────────────────────────────────────────────────────
+    # Within a batch the same (query, vertical, window, count, priority)
+    # tuple is hit many times by different discoverers. The cache returns
+    # a copy on hit so callers can mutate freely. Key includes the
+    # priority-chain tuple so a Safe-mode result doesn't satisfy a
+    # Full-mode lookup (different chain → potentially different links).
+    _cache_key = _query_cache.make_key(
+        query=query,
+        vertical=vertical,
+        count=count,
+        window=window,
+        priority_chain=tuple(enabled_ids),
+    )
+    _cached = _query_cache.get(_cache_key)
+    if _cached is not None:
+        log.debug(
+            "cache HIT: %s/%s (n=%d) — saved one backend call",
+            vertical, query[:40], len(_cached),
+        )
+        return _cached
+
+    def _emit(results: List[RawResult]) -> List[RawResult]:
+        """Store on cache miss, then return. Used at every return point."""
+        _query_cache.put(_cache_key, results)
+        return results
+
     # Headless-only verticals — wait for headless to come back if it's blocked.
     if vertical in HEADLESS_ONLY:
         if "headless_google" not in enabled_ids:
             log.info("%s requested but google_free is disabled — returning []", vertical)
-            return []
+            return _emit([])
         while True:
             if not backend_health.is_blocked("headless_google"):
-                return await get_headless().search(query, vertical, count, window)
+                return _emit(
+                    await get_headless().search(query, vertical, count, window)
+                )
             if not hard_wait_recovery:
-                return []
+                return _emit([])
             log.info(
                 "headless-only vertical %s waiting for headless recovery", vertical,
             )
@@ -154,7 +183,7 @@ async def search_with_fallback(
             )
             if not recovered and hard_wait_max_seconds is not None:
                 # Timed out — give up rather than spinning forever.
-                return []
+                return _emit([])
 
     accumulated: list[RawResult] = []
     seen_urls: set[str] = set()
@@ -196,11 +225,11 @@ async def search_with_fallback(
                 continue
             any_attempted = True
             if await _try(backend):
-                return accumulated
+                return _emit(accumulated)
 
         # If we accumulated anything (even partial), return it.
         if len(accumulated) > 0:
-            return accumulated
+            return _emit(accumulated)
 
         # Nothing attempted means EVERY eligible backend was blocked.
         if not any_attempted:
@@ -241,4 +270,4 @@ async def search_with_fallback(
         query[:50],
         vertical,
     )
-    return accumulated
+    return _emit(accumulated)

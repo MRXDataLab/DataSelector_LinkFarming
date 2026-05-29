@@ -850,6 +850,13 @@
       <span class="v" id="cost-pill-usd">$0.0000</span>
       <span id="cost-pill-detail" style="color: var(--text-faint);"></span>
     </div>
+    <!-- Search-cache pill — shows live cache savings (hits + hit-rate).
+         Populated from /backend-health.search_cache on each poll. -->
+    <div id="cache-pill" class="cost-pill" hidden title="In-memory query cache — saves backend calls when discoverers ask the same query twice.">
+      <span>cache:</span>
+      <span class="v" id="cache-pill-saved">0 saved</span>
+      <span id="cache-pill-rate" style="color: var(--text-faint);"></span>
+    </div>
     <div id="registry-status" class="status-pill">checking…</div>
   </div>
 </header>
@@ -1360,6 +1367,22 @@ const BACKEND_HINTS = {
 
 function renderBackendHealth(snapshot) {
   if (!snapshot || !snapshot.backends) return;
+  // ── Cache pill — show calls saved + hit rate once we have data ──
+  const sc = snapshot.search_cache;
+  if (sc && sc.enabled) {
+    const pill = $("cache-pill");
+    if (pill) {
+      // Hide until at least one lookup has happened (avoids noise on fresh start).
+      if ((sc.hits + sc.misses) > 0) {
+        pill.hidden = false;
+        $("cache-pill-saved").textContent = `${sc.calls_saved} saved`;
+        $("cache-pill-rate").textContent =
+          `(${(sc.hit_rate * 100).toFixed(0)}% hit · ${sc.size}/${sc.max_size})`;
+      } else {
+        pill.hidden = true;
+      }
+    }
+  }
   const blocked = [];   // hard fail
   const cooling = [];   // soft fail (cooldown)
   for (const [bid, h] of Object.entries(snapshot.backends)) {
