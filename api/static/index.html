@@ -573,8 +573,9 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Step 14 — past-runs + cost panel + settings drawer */
-  .past-runs-section { grid-column: 1 / -1; }
+  /* Step 14 — past-runs + cost panel + settings drawer.
+     `.past-runs-section` moved to header popover 2026-05-29; rule kept
+     out since no element uses it anymore. */
   .past-runs-table {
     border: 1px solid var(--border); border-radius: 6px;
     overflow: hidden;
@@ -651,6 +652,50 @@
   .backend-pill .cooldown {
     font-size: 10px; color: var(--text-faint); margin-left: 2px;
   }
+
+  /* ── Backend-mode toggle (Safe vs Full) ─────────────────────────────── */
+  .mode-toggle {
+    display: inline-flex; align-items: center; gap: 0;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px; font-size: 11px;
+    font-family: ui-monospace, monospace; user-select: none;
+  }
+  .mode-toggle button {
+    background: transparent; color: var(--text-faint);
+    border: none; padding: 4px 10px; border-radius: 999px;
+    cursor: pointer; font-size: 11px; font-family: inherit;
+    transition: background 0.15s, color 0.15s;
+  }
+  .mode-toggle button.active {
+    background: var(--teal); color: var(--bg); font-weight: 700;
+  }
+  .mode-toggle button:not(.active):hover { color: var(--text); }
+  /* When in Safe mode, dim the Google pill so users see it's intentionally off. */
+  body.mode-safe .backend-pill[data-backend="headless_google"] {
+    opacity: 0.35; text-decoration: line-through;
+  }
+
+  /* ── Past-runs header dropdown ───────────────────────────────────────── */
+  .past-runs-trigger {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 12px; font-size: 11px;
+    color: var(--text-dim); cursor: pointer; font-family: ui-monospace, monospace;
+  }
+  .past-runs-trigger:hover { color: var(--text); border-color: var(--teal-dim); }
+  .past-runs-popover {
+    position: absolute; top: 100%; right: 0; margin-top: 6px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; min-width: 480px; max-width: 720px;
+    max-height: 60vh; overflow: auto; z-index: 50;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    display: none;
+  }
+  .past-runs-popover.open { display: block; }
+  .past-runs-popover .pr-search {
+    display: flex; gap: 6px; margin-bottom: 8px;
+  }
+  .past-runs-popover input { flex: 1; }
 
   /* Backend-exhausted banner (Phase 1.5) — shown when any backend is in a
      hard-blocked state, with a one-line hint on what to do. */
@@ -783,6 +828,23 @@
       <span class="backend-pill idle" data-backend="headless_google"><span class="dot"></span>google</span>
       <span class="backend-pill idle" data-backend="youtube"><span class="dot"></span>yt</span>
     </div>
+    <div class="mode-toggle" id="mode-toggle" title="Backend mode — Safe skips Google entirely (no CAPTCHA cooldowns). Full uses Google + Brave + DDG.">
+      <button type="button" data-mode="safe">🛡️ Safe</button>
+      <button type="button" data-mode="full">⚡ Full</button>
+    </div>
+    <div style="position: relative;">
+      <button class="past-runs-trigger" id="past-runs-trigger" type="button">📚 Past runs</button>
+      <div class="past-runs-popover" id="past-runs-popover">
+        <div class="pr-search">
+          <input id="past-runs-filter" type="text" placeholder="Filter by hypothesis_id (e.g. h_006)" />
+          <button id="past-runs-refresh" style="background: var(--bg); color: var(--text); border: 1px solid var(--border);">↻</button>
+        </div>
+        <div class="past-runs-table" id="past-runs-table"></div>
+        <div id="past-runs-empty" style="color: var(--text-faint); padding: 16px; text-align: center; font-style: italic;" hidden>
+          No past runs yet — finish a batch and it'll appear here.
+        </div>
+      </div>
+    </div>
     <div id="cost-pill" class="cost-pill" hidden>
       <span>last run:</span>
       <span class="v" id="cost-pill-usd">$0.0000</span>
@@ -801,29 +863,22 @@
 
   <!-- ── BATCH UPLOAD SECTION ──────────────────────────────────────────── -->
   <!-- ── PHASE 2 — Manifest JSON upload ─────────────────────────────────── -->
-  <!-- First-time UX hint (dismissible, persists via localStorage) -->
+  <!-- First-time UX hint — compact single-line variant (dismissible, persists via localStorage) -->
   <div id="first-time-hint" style="
-       display: none; margin: 8px 0 18px 0; padding: 14px 18px;
-       background: linear-gradient(120deg, rgba(45,212,191,0.08), rgba(45,212,191,0.02));
-       border: 1px solid var(--teal-dim); border-radius: 8px;
-       font-size: 13px; line-height: 1.55; color: var(--text);">
-    <div style="display: flex; gap: 12px; align-items: start;">
-      <div style="font-size: 24px;">👋</div>
-      <div style="flex: 1;">
-        <div style="font-weight: 700; color: var(--teal); margin-bottom: 4px;">New here?</div>
-        <div>
-          Upload your <code>Full_Manifest_*.json</code> below, enter your brand name,
-          and (optionally) tick <strong>Generate synthesis</strong> for analyst-grade
-          per-hypothesis paragraphs. The pipeline runs <strong>L0 → L7</strong> in the
-          background; watch the per-row stage dots tick across as each hypothesis
-          progresses. You can download <strong>partial CSV / Synthesis HTML</strong>
-          at any time — no need to wait for the full batch.
-        </div>
-      </div>
-      <button id="first-time-hint-dismiss" type="button" style="
-        background: transparent; border: none; color: var(--text-faint);
-        font-size: 18px; cursor: pointer; padding: 0 6px;">×</button>
-    </div>
+       display: none; margin: 6px 0 12px 0; padding: 8px 14px;
+       background: rgba(45,212,191,0.06);
+       border: 1px solid var(--teal-dim); border-radius: 6px;
+       font-size: 12px; line-height: 1.4; color: var(--text-dim);
+       display: flex; gap: 10px; align-items: center;">
+    <span style="font-size: 14px;">👋</span>
+    <span style="flex: 1;">
+      Upload <code>Full_Manifest_*.json</code>, name your brand, hit <strong>Run</strong>.
+      Tick <strong>Generate synthesis</strong> for per-hypothesis paragraphs.
+      Partial CSV downloads available mid-run.
+    </span>
+    <button id="first-time-hint-dismiss" type="button" style="
+      background: transparent; border: none; color: var(--text-faint);
+      font-size: 16px; cursor: pointer; padding: 0 4px;">×</button>
   </div>
 
   <details id="manifest-section" class="batch-section" open>
@@ -868,10 +923,10 @@
               <label>Competitors <span class="ctx-hint">(edit if missed)</span></label>
               <textarea id="ctx-competitors" rows="2" placeholder="One per line"></textarea>
             </div>
-            <div class="ctx-block">
-              <label>Geo hints</label>
-              <textarea id="ctx-geo" rows="2" placeholder="india, bengaluru, ..."></textarea>
-            </div>
+            <!-- Geo hints UI hidden — manifest extractor handles geo automatically.
+                 Keep textarea as hidden no-op so the manifest start POST still
+                 finds `ctx-geo` and the existing geo data flow remains intact. -->
+            <textarea id="ctx-geo" hidden></textarea>
             <div class="ctx-block">
               <label>Target cohorts</label>
               <textarea id="ctx-cohorts" rows="2"></textarea>
@@ -1083,7 +1138,10 @@
   </section>
 
   <!-- ── INPUT PANEL (single hypothesis) ────────────────────────────────── -->
-  <section class="panel">
+  <!-- Hidden 2026-05-29: Manifest path supersedes single-hyp workflow.
+       JS handlers remain bound to these elements (harmlessly inert when
+       hidden) so we don't have to rip out hundreds of lines of code. -->
+  <section class="panel" style="display: none;">
     <h2>Hypothesis</h2>
     <label for="sample">Quick-load sample</label>
     <select id="sample">
@@ -1172,7 +1230,9 @@
   </section>
 
   <!-- ── EVENT STREAM PANEL ────────────────────────────────────────────── -->
-  <section class="panel">
+  <!-- Hidden 2026-05-29: events from single-hyp pipeline only; manifest
+       runs use the batch progress UI above. JS handlers remain bound. -->
+  <section class="panel" style="display: none;">
     <h2>
       Pipeline events
       <span class="count" id="event-count"></span>
@@ -1207,23 +1267,11 @@
     </div>
   </section>
 
-  <!-- ── PAST RUNS (Step 14 memory store) ──────────────────────────────── -->
-  <details class="batch-section past-runs-section" id="past-runs-section">
-    <summary>
-      <span>🕘 Past runs — load a saved job from disk</span>
-      <span class="chev">›</span>
-    </summary>
-    <div class="body">
-      <div style="display: flex; gap: 10px; margin-bottom: 12px;">
-        <input id="past-runs-filter" type="text" placeholder="Filter by hypothesis_id (e.g. h_006)" style="flex: 1;" />
-        <button id="past-runs-refresh" style="background: var(--bg); color: var(--text); border: 1px solid var(--border);">Refresh</button>
-      </div>
-      <div class="past-runs-table" id="past-runs-table"></div>
-      <div id="past-runs-empty" style="color: var(--text-faint); padding: 16px; text-align: center; font-style: italic;" hidden>
-        No past runs on disk yet. Run a pipeline once and it will land here.
-      </div>
-    </div>
-  </details>
+  <!-- ── PAST RUNS — promoted to header dropdown on 2026-05-29.
+       Old inline <details> block removed; element IDs (past-runs-filter,
+       past-runs-refresh, past-runs-table, past-runs-empty) now live in
+       the header popover. The toggle event handler that auto-loaded the
+       list is replaced by a click handler on #past-runs-trigger below. -->
 
   <!-- ── RESULTS GRID ──────────────────────────────────────────────────── -->
   <section id="results-area">
@@ -2029,11 +2077,58 @@ $("past-runs-refresh").addEventListener("click", () => loadPastRuns($("past-runs
 $("past-runs-filter").addEventListener("keydown", (e) => {
   if (e.key === "Enter") loadPastRuns($("past-runs-filter").value.trim());
 });
-$("past-runs-section").addEventListener("toggle", (e) => {
-  if (e.target.open && $("past-runs-table").children.length === 0) {
-    loadPastRuns("");
-  }
+
+// Past-runs header dropdown — show/hide on trigger click, autoload list
+// on first open. Click-outside dismisses.
+const pastRunsTrigger = $("past-runs-trigger");
+const pastRunsPopover = $("past-runs-popover");
+if (pastRunsTrigger && pastRunsPopover) {
+  pastRunsTrigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = !pastRunsPopover.classList.contains("open");
+    pastRunsPopover.classList.toggle("open", willOpen);
+    if (willOpen && $("past-runs-table").children.length === 0) {
+      loadPastRuns("");
+    }
+  });
+  // Click outside closes the popover.
+  document.addEventListener("click", (e) => {
+    if (!pastRunsPopover.classList.contains("open")) return;
+    if (pastRunsPopover.contains(e.target) || pastRunsTrigger.contains(e.target)) return;
+    pastRunsPopover.classList.remove("open");
+  });
+}
+
+// ── Backend mode toggle (Safe vs Full) ──────────────────────────────────
+// Safe   = ["brave", "duckduckgo"]  — skip Google entirely (no CAPTCHA noise)
+// Full   = ["google_free", "brave", "duckduckgo"] — current default
+// Persisted in localStorage; defaults to "safe" so first-time users don't
+// inherit the broken Google path.
+const MODE_KEY = "outtlyr.backend_mode";
+function getBackendMode() {
+  return localStorage.getItem(MODE_KEY) || "safe";
+}
+function setBackendMode(mode) {
+  localStorage.setItem(MODE_KEY, mode);
+  renderBackendMode();
+}
+function renderBackendMode() {
+  const mode = getBackendMode();
+  document.body.classList.toggle("mode-safe", mode === "safe");
+  document.body.classList.toggle("mode-full", mode === "full");
+  document.querySelectorAll("#mode-toggle button").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+}
+function getBackendModeBackends() {
+  return getBackendMode() === "safe"
+    ? ["brave", "duckduckgo"]
+    : ["google_free", "brave", "duckduckgo"];
+}
+document.querySelectorAll("#mode-toggle button").forEach(b => {
+  b.addEventListener("click", () => setBackendMode(b.dataset.mode));
 });
+renderBackendMode();
 
 // ── BATCH UPLOAD ─────────────────────────────────────────────────────────
 let currentCSVText = null;
@@ -2661,7 +2756,9 @@ if (manifestRunBtn) {
           max_triage: parseInt($("manifest-max-triage").value) || 30,
           concurrency: parseInt($("manifest-concurrency").value) || 3,
           triage_strictness: $("manifest-strictness").value,
-          backends: getBatchEnabledBackends ? getBatchEnabledBackends() : null,
+          // Backend mode toggle (header chip) is the single source of truth.
+          // Safe mode skips Google entirely; Full mode uses all three.
+          backends: getBackendModeBackends(),
           skip_triage: $("manifest-skip-triage").checked,
           enable_synthesis: $("manifest-enable-synthesis").checked,
           max_synthesis_links: 12,
